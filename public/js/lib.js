@@ -1,10 +1,11 @@
 // Shared helpers: API client, formatting, icons, chart defaults.
-let dashKey = null;
-try { dashKey = sessionStorage.getItem('dashKey'); } catch { /* storage blocked */ }
+// The dashboard key is kept in memory and in a session cookie so a refresh does not ask again.
+const readCookie = () => { try { return decodeURIComponent((document.cookie.match(/(?:^|; )dashKey=([^;]*)/) || [])[1] || '') || null; } catch { return null; } };
+let dashKey = readCookie();
 
 export function setKey(k) {
   dashKey = k;
-  try { sessionStorage.setItem('dashKey', k); } catch { /* ignore */ }
+  try { document.cookie = `dashKey=${encodeURIComponent(k)}; path=/; SameSite=Strict${location.protocol === 'https:' ? '; Secure' : ''}`; } catch { /* ignore */ }
 }
 
 export class AuthError extends Error {}

@@ -49,7 +49,7 @@ Row Level Security is enabled on every table with no public policies, so the Sup
 1. Push this folder to a GitHub repo and import it in Vercel (Framework preset: Other).
 2. Add environment variables:
    - `DATABASE_URL`: the Supabase transaction pooler string
-   - `DASHBOARD_KEY`: any secret phrase. The dashboard asks for it once and stores it in the browser. Leave empty only for private networks.
+   - `DASHBOARD_KEY`: any secret phrase. The dashboard asks for it once and keeps it in a session cookie. Leave empty only for private networks.
    - `AUTO_MIGRATE`: `1` (optional)
 3. Deploy. Static files are served from `public/`, and `/api/*` is routed to the FastAPI app in `api/index.py`.
 
