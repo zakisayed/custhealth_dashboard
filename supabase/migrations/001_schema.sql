@@ -1,6 +1,6 @@
 -- Customer Success Health Dashboard: Supabase / Postgres schema
 -- Run once in the Supabase SQL editor (or via `supabase db push`).
--- Safe to re-run: every statement is idempotent.
+-- Safe to re-run: every statement is idempotent..
 
 create table if not exists accounts (
   account_id   bigint primary key,
