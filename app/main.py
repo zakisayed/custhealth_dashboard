@@ -49,7 +49,6 @@ class VercelPathFix:
 
 app = FastAPI(title="Customer Health Engine", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.add_middleware(VercelPathFix)  # added last, so it runs first
 
 _schema_ready = False
 API_VERSION = 3  # 3 = login and users; 2 = multi-customer (adds /api/customers, per-customer uploads)
@@ -102,6 +101,11 @@ async def guard(request: Request, call_next):
         return JSONResponse({"detail": "Only the admin can do this.", "code": "admin_only"}, status_code=403)
     request.state.user = user
     return await call_next(request)
+
+
+# Must be registered after guard: the last middleware added is the outermost, so the real
+# /api/... path is restored before guard checks PUBLIC_PATHS (Vercel sends /api/index?__path=...).
+app.add_middleware(VercelPathFix)
 
 
 def _err(exc: Exception, code: int = 400):
