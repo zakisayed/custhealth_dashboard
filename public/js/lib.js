@@ -23,7 +23,9 @@ export async function api(path, opts = {}) {
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
     try { const j = await res.json(); msg = j.detail || msg; } catch { /* not json */ }
-    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    err.status = res.status; err.path = path;
+    throw err;
   }
   const ct = res.headers.get('content-type') || '';
   return ct.includes('json') ? res.json() : res.text();

@@ -26,6 +26,7 @@ app = FastAPI(title="Customer Health Engine", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 _schema_ready = False
+API_VERSION = 2  # 2 = multi-customer (adds /api/customers, per-customer uploads)
 
 
 @app.middleware("http")
@@ -63,7 +64,7 @@ def status():
                       (select max(activity_date) from daily_activity) data_through,
                       (select min(activity_date) from daily_activity) data_from,
                       (select count(*) from uploads where status='complete') uploads""").fetchone()
-    return {**r, "auth_required": bool(os.environ.get("DASHBOARD_KEY")), "keep_columns": KEEP_COLUMNS}
+    return {**r, "api_version": API_VERSION, "auth_required": bool(os.environ.get("DASHBOARD_KEY")), "keep_columns": KEEP_COLUMNS}
 
 
 def _customer_meta(conn) -> dict[int, dict]:

@@ -49,7 +49,11 @@ All weights and thresholds can be tuned with environment variables (see `app/con
 
 1. Create a Supabase project.
 2. Create the tables: open SQL Editor and run `supabase/migrations/001_schema.sql`. Alternatively leave `AUTO_MIGRATE=1` and the API creates them on the first request. The script is idempotent.
-3. Copy the connection string from Project Settings, Database, Connection string, Transaction pooler (port 6543). This is your `DATABASE_URL`.
+3. Click Connect, open Connection string, and set Method to Transaction pooler. Copy the string that looks like `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres`. This is your `DATABASE_URL`.
+   - This is the shared pooler (Supavisor). It is free and IPv4 on every plan, which Vercel needs.
+   - Do not use a `db.<project-ref>.supabase.co` host (direct connection or dedicated pooler). It is IPv6 only unless you buy the IPv4 add-on, and Vercel is IPv4 only. The app refuses this host with a clear message; set `ALLOW_DIRECT_DB=1` if you do have the add-on.
+   - URL-encode special characters in the password (`@` becomes `%40`, `#` becomes `%23`).
+   - No anon or service role key is needed. The browser only talks to FastAPI, and FastAPI talks to Postgres.
 
 Row Level Security is enabled on every table with no public policies, so the Supabase anon key cannot read the data. Only the API (direct Postgres connection) can.
 
@@ -57,7 +61,7 @@ Row Level Security is enabled on every table with no public policies, so the Sup
 
 1. Push this folder to a GitHub repo and import it in Vercel (Framework preset: Other).
 2. Add environment variables:
-   - `DATABASE_URL`: the Supabase transaction pooler string
+   - `DATABASE_URL`: the Supabase shared transaction pooler string (host ends in `pooler.supabase.com`)
    - `DASHBOARD_KEY`: any secret phrase. The dashboard asks for it once and keeps it in a session cookie. Leave empty only for private networks.
    - `AUTO_MIGRATE`: `1` (optional)
 3. Deploy. Static files are served from `public/`, and `/api/*` is routed to the FastAPI app in `api/index.py`.
@@ -105,3 +109,11 @@ Send `X-Dashboard-Key` when `DASHBOARD_KEY` is set.
 - The export has no login or session events, so sessions are estimated from activity gaps.
 - No deletes and no use cases appear in the sample file. The engine handles them when they show up.
 - With one account, the peer benchmark is off. It turns on at 3 accounts with 14+ days of history.
+
+## Troubleshooting
+
+| Message on the dashboard | Cause and fix |
+| --- | --- |
+| Database not reachable: ... IPv6 only | `DATABASE_URL` points at `db.<ref>.supabase.co`. Use the shared pooler string (`aws-0-<region>.pooler.supabase.com:6543`). |
+| Database not reachable: ... password authentication failed | Wrong password, or special characters not URL-encoded. Reset it under Project Settings, Database. |
+| Not Found (path shown) | The API has no route for that path. Redeploy the whole project (not only `public/`) and keep `vercel.json` in the project root. `/api/status` returns `api_version: 2` on the current backend. |
