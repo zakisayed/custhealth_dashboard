@@ -119,8 +119,18 @@ function askKey(message) {
 }
 
 function showError(e) {
-  view.innerHTML = `<div class="card"><div class="alert err">${ICON.at_risk}<div><b>Could not load data.</b><br>${esc(e.message)}</div></div>
-    <p class="muted small" style="margin-top:var(--space-4)">Check that <code>DATABASE_URL</code> points to your Supabase pooler connection string.</p></div>`;
+  let hint;
+  if (e.status === 404 && (e.message === 'Not Found' || !e.message)) {
+    hint = `The API has no route for <code>${esc(e.path || '')}</code>. The backend is either an older version than this page (redeploy the whole project, not only <code>public/</code>), or Vercel is not routing <code>/api/*</code> to <code>api/index.py</code> (check that <code>vercel.json</code> is in the project root).`;
+  } else if (e.status === 503 || /database/i.test(e.message)) {
+    hint = 'Check that <code>DATABASE_URL</code> points to your Supabase pooler connection string (port 6543) and that the password is URL-encoded.';
+  } else if (!e.status) {
+    hint = 'The API could not be reached. Check that the backend is running and that the page and API are on the same domain.';
+  } else {
+    hint = 'Check the function logs on Vercel for the full error.';
+  }
+  view.innerHTML = `<div class="card"><div class="alert err">${ICON.at_risk}<div><b>Could not load data.</b><br>${esc(e.message)}${e.path ? ` <span class="muted">(${esc(e.path)})</span>` : ''}</div></div>
+    <p class="muted small" style="margin-top:var(--space-4)">${hint}</p></div>`;
 }
 
 export async function route() {
