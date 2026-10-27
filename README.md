@@ -53,6 +53,7 @@ All weights and thresholds can be tuned with environment variables (see `app/con
    - This is the shared pooler (Supavisor). It is free and IPv4 on every plan, which Vercel needs.
    - Do not use a `db.<project-ref>.supabase.co` host (direct connection or dedicated pooler). It is IPv6 only unless you buy the IPv4 add-on, and Vercel is IPv4 only. The app refuses this host with a clear message; set `ALLOW_DIRECT_DB=1` if you do have the add-on.
    - URL-encode special characters in the password (`@` becomes `%40`, `#` becomes `%23`).
+   - Keep Vercel functions in the same region as the database. `vercel.json` sets `"regions": ["icn1"]` (Seoul) to match a Supabase project in `ap-northeast-2`. Change it if your project is elsewhere (for example `iad1` for `us-east-1`).
    - No anon or service role key is needed. The browser only talks to FastAPI, and FastAPI talks to Postgres.
 
 Row Level Security is enabled on every table with no public policies, so the Supabase anon key cannot read the data. Only the API (direct Postgres connection) can.

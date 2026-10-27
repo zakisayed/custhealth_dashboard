@@ -11,5 +11,8 @@
       "source": "/api/:path*",
       "destination": "/api/index?__path=:path*"
     }
+  ],
+  "regions": [
+    "icn1"
   ]
 }
