@@ -161,3 +161,40 @@ alter table daily_activity        enable row level security;
 alter table daily_activity_detail enable row level security;
 alter table health_snapshots      enable row level security;
 alter table calibration_runs      enable row level security;
+
+-- ---------------------------------------------------------------------------- login
+-- Dashboard users. Passwords are PBKDF2-SHA256 hashes; the admin is seeded by the app.
+create table if not exists app_users (
+  user_id         bigserial primary key,
+  email           text not null,
+  password_hash   text not null,
+  role            text not null default 'user' check (role in ('admin', 'user')),
+  must_change_password boolean not null default true,
+  password_version integer not null default 1,      -- bump to sign out every session of the user
+  failed_logins   integer not null default 0,
+  locked_until    timestamptz,
+  created_by      text,
+  created_at      timestamptz not null default now(),
+  password_changed_at timestamptz,
+  last_login_at   timestamptz
+);
+create unique index if not exists app_users_email_key on app_users (lower(email));
+
+create table if not exists app_settings (
+  key   text primary key,
+  value text not null
+);
+
+alter table uploads add column if not exists uploaded_by text;
+
+create table if not exists scoring_model_versions (
+  version_id  bigserial primary key,
+  model       jsonb not null,
+  changed_by  text,
+  changed_at  timestamptz not null default now(),
+  note        text
+);
+
+alter table app_users    enable row level security;
+alter table scoring_model_versions enable row level security;
+alter table app_settings enable row level security;

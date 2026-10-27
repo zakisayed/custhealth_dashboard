@@ -7,6 +7,9 @@ from app.normalize import KEEP_COLUMNS
 
 path = sys.argv[1]
 c = TestClient(app)
+sys.path.insert(0, 'tests')
+from _auth import sign_in  # noqa: E402
+sign_in(c)
 rows = []
 with open(path, encoding="utf-8-sig") as f:
     for r in csv.DictReader(f):

@@ -1,4 +1,5 @@
-import { api, AuthError, setKey, esc, fmt, ICON, destroyCharts, chartDefaults } from './lib.js';
+import { api, AuthError, PasswordChangeError, setSession, setCurrentUser, currentUser, hasToken, esc, fmt, ICON, destroyCharts, chartDefaults } from './lib.js';
+import { renderLogin, renderSetPassword, renderProfile, renderUsers } from './auth.js';
 import { renderPortfolio } from './portfolio.js';
 import { renderAccount } from './account.js';
 import { renderUpload, renderNewCustomer } from './upload.js';
@@ -33,6 +34,8 @@ export function currentRoute() {
   if (parts[0] === 'new') return { page: 'new' };
   if (parts[0] === 'upload') return { page: 'new' };
   if (parts[0] === 'model') return { page: 'model' };
+  if (parts[0] === 'profile') return { page: 'profile' };
+  if (parts[0] === 'users') return { page: 'users' };
   return { page: 'overview' };
 }
 
@@ -46,6 +49,7 @@ function renderNav() {
   document.getElementById('nav').innerHTML = `
     ${link('#/', ICON.grid, 'All customers', r.page === 'overview')}
     ${link('#/model', ICON.model, 'Scoring model', r.page === 'model')}
+    ${currentUser?.role === 'admin' ? link('#/users', ICON.users, 'Users', r.page === 'users') : ''}
     <div class="nav-label nav-label-row"><span>Customers${list.length ? ` (${list.length})` : ''}</span>
       <a href="#/new" class="icon-link" title="Add customer" aria-label="Add customer">${ICON.plus}</a></div>
     ${list.length > 5 ? `<input class="nav-search" id="nav-search" type="search" placeholder="Find customer" value="${esc(customerFilter)}" aria-label="Find customer" />` : ''}
@@ -76,9 +80,15 @@ function renderNav() {
     });
   }
   const s = state.status;
-  document.getElementById('sidebar-foot').innerHTML = s
-    ? `${fmt.n(list.length)} customer${list.length == 1 ? '' : 's'} · ${fmt.n(s.events)} events<br>${fmt.n(s.uploads)} upload${s.uploads == 1 ? '' : 's'} processed`
-    : '';
+  const u = currentUser;
+  document.getElementById('sidebar-foot').innerHTML = (s
+    ? `<div class="foot-stats">${fmt.n(list.length)} customer${list.length == 1 ? '' : 's'} · ${fmt.n(s.events)} events<br>${fmt.n(s.uploads)} upload${s.uploads == 1 ? '' : 's'} processed</div>`
+    : '') + (u ? `<div class="user-box">
+      <span class="avatar" aria-hidden="true">${esc(u.email.slice(0, 2))}</span>
+      <a class="who" href="#/profile" title="Profile settings"><b>${esc(u.email)}</b><span>${u.role === 'admin' ? 'Admin' : 'User'}</span></a>
+      <button class="icon-btn" id="sign-out" title="Sign out" aria-label="Sign out">${ICON.logout}</button>
+    </div>` : '');
+  document.getElementById('sign-out')?.addEventListener('click', signOut);
 
   // top bar: context-aware primary action and data date
   const cur = r.id ? list.find((c) => c.account_id === r.id) : null;
@@ -99,23 +109,48 @@ export function crumbs(html) {
   document.getElementById('crumbs').innerHTML = html;
 }
 
-function askKey(message) {
-  crumbs('<b>Sign in</b>');
-  view.innerHTML = `
-    <div class="card" style="max-width:420px;margin:var(--space-12) auto">
-      <h2>Enter dashboard key</h2>
-      <p class="muted small">${esc(message || 'This dashboard is protected.')}</p>
-      <form id="key-form" class="field" style="margin-top:var(--space-4)">
-        <label for="key">Key</label>
-        <input id="key" type="password" autocomplete="current-password" required />
-        <button class="btn primary" style="margin-top:var(--space-3);justify-content:center">Continue</button>
-      </form>
-    </div>`;
-  document.getElementById('key-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    setKey(document.getElementById('key').value.trim());
-    route();
+const authScreen = document.getElementById('auth-screen');
+let tempPassword = null;   // kept in memory only, to skip retyping it on the forced change screen
+
+function showApp() {
+  document.body.classList.remove('signed-out');
+  authScreen.hidden = true;
+  authScreen.innerHTML = '';
+}
+
+function showLogin(message) {
+  destroyCharts();
+  state.status = null;
+  setCurrentUser(null);
+  document.body.classList.add('signed-out');
+  authScreen.hidden = false;
+  document.title = 'Sign in · Customer Health Console';
+  renderLogin(authScreen, {
+    message,
+    onSignedIn: (user, pw) => {
+      tempPassword = user.must_change_password ? pw : null;
+      route();
+    },
   });
+}
+
+function showSetPassword(user) {
+  document.body.classList.add('signed-out');
+  authScreen.hidden = false;
+  document.title = 'Create a new password · Customer Health Console';
+  renderSetPassword(authScreen, {
+    user, tempPassword,
+    onDone: () => { tempPassword = null; route(); },
+    onSignOut: signOut,
+  });
+}
+
+async function signOut() {
+  try { await api('/api/auth/logout', { method: 'POST' }); } catch { /* stateless */ }
+  setSession(null);
+  tempPassword = null;
+  if (location.hash && location.hash !== '#/') history.replaceState(null, '', location.pathname + location.search);
+  showLogin('You are signed out.');
 }
 
 function showError(e) {
@@ -138,6 +173,11 @@ export async function route() {
   chartDefaults();
   document.getElementById('sidebar').classList.remove('open');
   try {
+    if (!hasToken()) { showLogin(); return; }
+    if (!currentUser) setCurrentUser(await api('/api/auth/me'));
+    if (currentUser.must_change_password) { showSetPassword(currentUser); return; }
+    showApp();
+    document.title = 'Customer Health Console';
     if (!state.status) await refreshShell();
     // first open: go to the last customer, or to onboarding when there are none
     if (!location.hash || location.hash === '#') {
@@ -161,10 +201,13 @@ export async function route() {
     else if (r.page === 'upload') await renderUpload(view, r.id);
     else if (r.page === 'new') await renderNewCustomer(view);
     else if (r.page === 'model') await renderModel(view);
+    else if (r.page === 'profile') await renderProfile(view);
+    else if (r.page === 'users') await renderUsers(view);
     else await renderPortfolio(view);
   } catch (e) {
     console.error(e);
-    if (e instanceof AuthError) askKey();
+    if (e instanceof AuthError) showLogin(e.message);
+    else if (e instanceof PasswordChangeError) { setCurrentUser(null); route(); }
     else showError(e);
   }
 }

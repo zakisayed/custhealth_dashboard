@@ -93,8 +93,8 @@ async function loadHistory(accountId) {
   if (!el) return;
   if (!rows.length) { el.innerHTML = '<tbody><tr><td class="muted">No uploads yet</td></tr></tbody>'; return; }
   const st = { complete: 'healthy', failed: 'at_risk', processing: 'watch', receiving: 'watch' };
-  el.innerHTML = `<thead><tr><th>When</th><th>File</th><th>Status</th><th class="n">Rows</th><th class="n">New</th><th class="n">Already stored</th><th class="n">Rejected</th><th>Covers</th></tr></thead>
-    <tbody>${rows.map((u) => `<tr><td class="nw">${fmt.time(u.created_at)}</td><td>${esc(u.filename || '–')}</td>
+  el.innerHTML = `<thead><tr><th>When</th><th>File</th><th>By</th><th>Status</th><th class="n">Rows</th><th class="n">New</th><th class="n">Already stored</th><th class="n">Rejected</th><th>Covers</th></tr></thead>
+    <tbody>${rows.map((u) => `<tr><td class="nw">${fmt.time(u.created_at)}</td><td>${esc(u.filename || '–')}</td><td class="nw small">${esc(u.uploaded_by || '')}</td>
       <td><span class="badge ${st[u.status] || 'info'}">${esc(u.status)}</span></td>
       <td class="n num">${fmt.n(u.rows_received)}</td><td class="n num">${fmt.n(u.rows_inserted)}</td><td class="n num">${fmt.n(u.rows_duplicate)}</td><td class="n num">${fmt.n(u.rows_rejected)}</td>
       <td class="small nw">${u.min_ts ? `${fmt.short(u.min_ts)} to ${fmt.short(u.max_ts)}` : '–'}</td></tr>`).join('')}</tbody>`;

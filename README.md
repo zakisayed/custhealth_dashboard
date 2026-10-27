@@ -4,6 +4,18 @@ Upload the platform activity export (CSV, same columns as `brown_and_caldwell.cs
 
 Stack: FastAPI (Python) API, plain HTML/CSS/JS frontend, Supabase Postgres for storage, Vercel for hosting.
 
+## Sign in and users
+
+The dashboard requires a login.
+
+- The admin account is `admin@dvsum.com`. On the first start it is created with the temporary password `ChangeMe`. Sign in with it and the app makes you create your own password before anything else loads. Change it later under Profile settings (click your email at the bottom of the sidebar).
+- The admin opens Users to add people. Enter their email and a temporary password (prefilled with `ChangeMe`). On their first sign in they must create a new password before they can see any data.
+- Users can view every customer dashboard, add customers and upload CSV files. Only the admin can manage users, edit the scoring model, change customer settings and remove customers.
+- The admin can reset a user's password (back to a temporary one, forcing a new password at next sign in) or delete a user. Deleting or resetting signs that person out immediately. The primary admin cannot be deleted.
+- Passwords need 8+ characters with letters and a number or symbol, and cannot be the temporary password. Five wrong passwords lock the account for 10 minutes.
+- Passwords are stored as PBKDF2-SHA256 hashes. Sessions are signed tokens that last 7 days (`SESSION_HOURS`). Changing a password signs out other devices.
+- Forgot the admin password? Run this SQL in Supabase to go back to `ChangeMe` with a forced change: `delete from app_users where lower(email)='admin@dvsum.com';` then reload the app (it recreates the admin).
+
 ## Customers
 
 Each customer has its own dashboard. The sidebar lists every customer with its current score and status. Select one to open its dashboard, and use Upload data under it to add new exports.
@@ -39,11 +51,25 @@ Each customer has its own dashboard. The sidebar lists every customer with its c
 | Consistency | 10% | Active days in 14 compared with the account's typical count. |
 | Platform | 10% | Starts at 100. Critical alarms cost 30, warnings 10, auto-resolved ones half. |
 
-Status: Healthy at 70 or above, Needs attention 50 to 69, At risk below 50. An account with no user activity for longer than max(30 days, 4 times its usual gap) is always At risk.
+Status (defaults): Healthy at 70 or above, Needs attention 50 to 69, At risk below 50. An account with no user activity for longer than max(30 days, 4 times its usual gap) is always At risk.
 
 Calibration: under 28 days of history the score is marked Calibrating and leans on defaults. From 28 to 70 days it is Building. After 70 days it is Calibrated and the baselines come entirely from the account's own history. Every upload rescores all days for all accounts, so history and trends always reflect the latest baselines.
 
-All weights and thresholds can be tuned with environment variables (see `app/config.py`), for example `HEALTHY_AT=75`, `W_ENGAGEMENT=0.35`, `AUTO_TX_PER_MINUTE=20`.
+### Editing the model
+
+The admin can change the model on the Scoring model page (Edit model):
+
+- Component weights (sliders, scaled to 100% on save)
+- Status thresholds for Healthy and Needs attention
+- Targets: starting actions and active-day targets, active user share and object types for full marks, alarm penalties
+- Confidence: days of history for Calibrating and Calibrated
+- Activity classification: automated burst and sustained rates, session gap
+
+While editing, an impact preview scores every customer with the draft (nothing is saved) and highlights status changes. Save and recalibrate stores the model in Supabase, rescores every day of every customer's history, recalibrates baselines and peer benchmarks, and shows a before and after table. Every change is kept in a change log with who made it and why. Reset to defaults goes back to the values in `app/config.py`.
+
+The model keeps calibrating on its own after that: each upload rescores all history with the saved model, and baselines move from default targets to peer medians to each customer's own history as data builds up.
+
+The defaults can still be set with environment variables (see `app/config.py`), for example `HEALTHY_AT=75`, `W_ENGAGEMENT=0.35`. A model saved in the app takes priority.
 
 ## Supabase setup
 
@@ -63,7 +89,8 @@ Row Level Security is enabled on every table with no public policies, so the Sup
 1. Push this folder to a GitHub repo and import it in Vercel (Framework preset: Other).
 2. Add environment variables:
    - `DATABASE_URL`: the Supabase shared transaction pooler string (host ends in `pooler.supabase.com`)
-   - `DASHBOARD_KEY`: any secret phrase. The dashboard asks for it once and keeps it in a session cookie. Leave empty only for private networks.
+   - `SESSION_SECRET` (optional): a long random string used to sign sessions. If not set, one is generated and stored in the database on first start.
+   - `ADMIN_EMAIL` (optional, default `admin@dvsum.com`) and `ADMIN_INITIAL_PASSWORD` (optional, default `ChangeMe`). These only apply when the admin is first created.
    - `AUTO_MIGRATE`: `1` (optional)
 3. Deploy. Static files are served from `public/`, and `/api/*` is routed to the FastAPI app in `api/index.py`.
 
@@ -82,7 +109,10 @@ Tests use whatever database `DATABASE_URL` points to, so use a throwaway one:
 ```bash
 DATABASE_URL=postgresql://localhost/cstest python3 tests/test_backend.py path/to/export.csv
 DATABASE_URL=postgresql://localhost/cstest python3 tests/test_history.py path/to/export.csv
+DATABASE_URL=postgresql://localhost/cstest python3 tests/test_auth.py path/to/export.csv
 ```
+
+The tests sign in as the admin. On a fresh database they replace `ChangeMe` with `TestPass123!`, so never point them at production.
 
 ## API
 
@@ -101,9 +131,18 @@ DATABASE_URL=postgresql://localhost/cstest python3 tests/test_history.py path/to
 | GET / PATCH | `/api/accounts/{id}` | Account detail, or update name, time zone, seats |
 | GET | `/api/accounts/{id}/daily` | Daily per-user rollup |
 | GET | `/api/export/daily.csv` | Daily summary CSV (`?account_id=` optional) |
-| GET | `/api/model` | Weights, thresholds and calibration state |
+| GET | `/api/model` | Current model, defaults, field limits, calibration state and change log |
+| POST | `/api/model/preview` | Admin. Score every customer with a draft model without saving |
+| PUT | `/api/model` | Admin. Save the model, rescore all history and recalibrate |
+| POST | `/api/model/reset` | Admin. Go back to the defaults and rescore |
+| POST | `/api/auth/login` | Email and password, returns a session token |
+| GET | `/api/auth/me` | The signed-in user |
+| POST | `/api/auth/change-password` | Current and new password, returns a fresh token |
+| GET / POST | `/api/users` | Admin. List users, or add one (`email`, `temp_password`, default `ChangeMe`) |
+| POST | `/api/users/{id}/reset-password` | Admin. Set a temporary password and force a change |
+| DELETE | `/api/users/{id}` | Admin. Delete a user |
 
-Send `X-Dashboard-Key` when `DASHBOARD_KEY` is set.
+Every endpoint except `/api/ping` and `/api/auth/login` needs `Authorization: Bearer <token>`. Users with a temporary password can only reach `/api/auth/*` until they set a new one.
 
 ## Known limits
 

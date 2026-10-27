@@ -1,30 +1,47 @@
 // Shared helpers: API client, formatting, icons, chart defaults.
-// The dashboard key is kept in memory and in a session cookie so a refresh does not ask again.
-const readCookie = () => { try { return decodeURIComponent((document.cookie.match(/(?:^|; )dashKey=([^;]*)/) || [])[1] || '') || null; } catch { return null; } };
-let dashKey = readCookie();
+// The sign-in token is kept in a cookie (7 days) and sent as a Bearer header.
+const TOKEN = 'csToken';
+const readToken = () => { try { return decodeURIComponent((document.cookie.match(/(?:^|; )csToken=([^;]*)/) || [])[1] || '') || null; } catch { return null; } };
+let token = readToken();
+export let currentUser = null;
 
-export function setKey(k) {
-  dashKey = k;
-  try { document.cookie = `dashKey=${encodeURIComponent(k)}; path=/; SameSite=Strict${location.protocol === 'https:' ? '; Secure' : ''}`; } catch { /* ignore */ }
+export function setSession(t, user) {
+  token = t || null;
+  currentUser = user || null;
+  const secure = location.protocol === 'https:' ? '; Secure' : '';
+  try {
+    document.cookie = t
+      ? `${TOKEN}=${encodeURIComponent(t)}; path=/; max-age=${7 * 86400}; SameSite=Strict${secure}`
+      : `${TOKEN}=; path=/; max-age=0; SameSite=Strict${secure}`;
+  } catch { /* ignore */ }
 }
+export function setCurrentUser(u) { currentUser = u; }
+export function hasToken() { return !!token; }
 
 export class AuthError extends Error {}
+export class PasswordChangeError extends Error {}
+
+function authHeaders(headers = {}) {
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
 
 export async function api(path, opts = {}) {
-  const headers = { ...(opts.headers || {}) };
+  const headers = authHeaders({ ...(opts.headers || {}) });
   if (opts.json !== undefined) headers['Content-Type'] = 'application/json';
-  if (dashKey) headers['X-Dashboard-Key'] = dashKey;
   const res = await fetch(`${window.API_BASE}${path}`, {
     method: opts.method || (opts.json !== undefined ? 'POST' : 'GET'),
     headers,
     body: opts.json !== undefined ? JSON.stringify(opts.json) : opts.body,
   });
-  if (res.status === 401) throw new AuthError('Dashboard key required');
   if (!res.ok) {
-    let msg = `${res.status} ${res.statusText}`;
-    try { const j = await res.json(); msg = j.detail || msg; } catch { /* not json */ }
-    const err = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
-    err.status = res.status; err.path = path;
+    let msg = `${res.status} ${res.statusText}`, code = null;
+    try { const j = await res.json(); msg = j.detail || msg; code = j.code || null; } catch { /* not json */ }
+    if (typeof msg !== 'string') msg = JSON.stringify(msg);
+    if (code === 'auth_required') { setSession(null); throw new AuthError(msg); }
+    if (code === 'password_change_required') throw new PasswordChangeError(msg);
+    const err = new Error(msg);
+    err.status = res.status; err.path = path; err.code = code;
     throw err;
   }
   const ct = res.headers.get('content-type') || '';
@@ -89,6 +106,12 @@ export const COMP_LABEL = {
 };
 
 export const ICON = {
+  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 19c1.2-3.3 3.6-5 6.5-5s5.3 1.7 6.5 5"/><path d="M15.5 4.8a3.5 3.5 0 0 1 0 6.4M18 14.3c1.6.8 2.8 2.4 3.5 4.7"/></svg>',
+  logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M9 16l-4-4 4-4M5 12h11"/></svg>',
+  key: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/></svg>',
+  eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
   healthy: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3.5 8.5l3 3 6-7"/></svg>',
@@ -143,12 +166,12 @@ export function sparkline(values, { w = 96, h = 26, color = 'var(--primary)', mi
     <circle cx="${last[0]}" cy="${last[1]}" r="2.2" fill="${color}"/></svg>`;
 }
 
-export function toast(msg) {
+export function toast(msg, ms = 2600) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(t._h);
-  t._h = setTimeout(() => t.classList.remove('show'), 2600);
+  t._h = setTimeout(() => t.classList.remove('show'), ms);
 }
 
 // ---------- charts
@@ -207,9 +230,7 @@ export function addDays(iso, n) {
 }
 
 export async function download(path, filename) {
-  const headers = {};
-  if (dashKey) headers['X-Dashboard-Key'] = dashKey;
-  const res = await fetch(`${window.API_BASE}${path}`, { headers });
+  const res = await fetch(`${window.API_BASE}${path}`, { headers: authHeaders() });
   if (!res.ok) { toast(`Download failed (${res.status})`); return; }
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
