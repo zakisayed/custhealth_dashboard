@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from urllib.parse import parse_qsl, urlencode
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -22,8 +23,33 @@ from .engine import recompute
 from .ingest import add_rows, complete_upload, create_upload
 from .normalize import ALL_OBJECT_COLUMNS, KEEP_COLUMNS
 
+class VercelPathFix:
+    """Restore the original /api/... path when Vercel hands the request over as /api/index.
+
+    Vercel may run this app through api/index.py (legacy functions + vercel.json rewrite to
+    /api/index?__path=...) or detect app/main.py directly (FastAPI preset). Either way the
+    rewrite can leave FastAPI seeing /api/index, so put the real path back before routing.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "").rstrip("/") in ("/api/index", "/api/index.py", "/api"):
+            pairs = parse_qsl(scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True)
+            forced = next((v for k, v in pairs if k == "__path"), None)
+            path = "/api/" + forced.lstrip("/") if forced else "/api/status"
+            rest = urlencode([(k, v) for k, v in pairs if k != "__path"])
+            scope = {**scope, "path": path, "raw_path": path.encode(), "query_string": rest.encode("latin-1")}
+        elif scope["type"] == "http" and b"__path=" in scope.get("query_string", b""):
+            pairs = parse_qsl(scope["query_string"].decode("latin-1"), keep_blank_values=True)
+            scope = {**scope, "query_string": urlencode([(k, v) for k, v in pairs if k != "__path"]).encode("latin-1")}
+        await self.app(scope, receive, send)
+
+
 app = FastAPI(title="Customer Health Engine", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(VercelPathFix)  # added last, so it runs first
 
 _schema_ready = False
 API_VERSION = 2  # 2 = multi-customer (adds /api/customers, per-customer uploads)

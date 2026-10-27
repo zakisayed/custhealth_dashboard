@@ -69,6 +69,7 @@ def connect():
 
 def ensure_schema() -> None:
     """Apply the idempotent schema. Safe on every cold start when AUTO_MIGRATE=1."""
-    sql = SCHEMA_FILE.read_text()
+    path = SCHEMA_FILE if SCHEMA_FILE.exists() else Path(__file__).resolve().parent / "schema.sql"
+    sql = path.read_text()
     with connect() as conn:
         conn.execute(sql)

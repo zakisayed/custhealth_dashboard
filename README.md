@@ -53,6 +53,7 @@ All weights and thresholds can be tuned with environment variables (see `app/con
    - This is the shared pooler (Supavisor). It is free and IPv4 on every plan, which Vercel needs.
    - Do not use a `db.<project-ref>.supabase.co` host (direct connection or dedicated pooler). It is IPv6 only unless you buy the IPv4 add-on, and Vercel is IPv4 only. The app refuses this host with a clear message; set `ALLOW_DIRECT_DB=1` if you do have the add-on.
    - URL-encode special characters in the password (`@` becomes `%40`, `#` becomes `%23`).
+   - Keep Vercel functions in the same region as the database. `vercel.json` sets `"regions": ["icn1"]` (Seoul) to match a Supabase project in `ap-northeast-2`. Change it if your project is elsewhere (for example `iad1` for `us-east-1`).
    - No anon or service role key is needed. The browser only talks to FastAPI, and FastAPI talks to Postgres.
 
 Row Level Security is enabled on every table with no public policies, so the Supabase anon key cannot read the data. Only the API (direct Postgres connection) can.
@@ -116,4 +117,4 @@ Send `X-Dashboard-Key` when `DASHBOARD_KEY` is set.
 | --- | --- |
 | Database not reachable: ... IPv6 only | `DATABASE_URL` points at `db.<ref>.supabase.co`. Use the shared pooler string (`aws-0-<region>.pooler.supabase.com:6543`). |
 | Database not reachable: ... password authentication failed | Wrong password, or special characters not URL-encoded. Reset it under Project Settings, Database. |
-| Not Found (path shown) | The API has no route for that path. Redeploy the whole project (not only `public/`) and keep `vercel.json` in the project root. `/api/status` returns `api_version: 2` on the current backend. |
+| Not Found (path shown) | Usually an old backend. Redeploy the whole project root (the folder with `vercel.json`, `app/`, `api/` and `public/`), not only `public/`. Open `https://<your-app>.vercel.app/api/status` and confirm it returns `"api_version": 2`. Vercel may run the app from `api/index.py` or detect `app/main.py` as a FastAPI app; both work. |
