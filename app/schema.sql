@@ -20,6 +20,7 @@ create table if not exists account_users (
   last_seen    timestamptz,
   primary key (account_id, user_id)
 );
+alter table account_users add column if not exists email text;
 
 create table if not exists uploads (
   upload_id      bigserial primary key,

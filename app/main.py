@@ -436,8 +436,9 @@ def account(account_id: int):
                       count(*) active_days, sum(da.total_events) events, sum(da.manual_events) manual,
                       sum(da.automated_events) automated, sum(da.actions) actions, sum(da.est_sessions) sessions,
                       sum(da.created) created, sum(da.updated) updated, sum(da.deleted) deleted, sum(da.executed) executed,
-                      max(da.last_activity) last_activity
-               from daily_activity da where da.account_id=%s group by 1 order by sum(da.actions) desc nulls last""",
+                      max(da.last_activity) last_activity,
+                      (select u.email from account_users u where u.account_id=da.account_id and u.user_id=da.user_id) email
+               from daily_activity da where da.account_id=%s group by da.account_id, da.user_id order by sum(da.actions) desc nulls last""",
             [account_id]).fetchall()
         user_daily = conn.execute(
             "select user_id, activity_date d, actions, total_events events from daily_activity where account_id=%s and actor_type='user'",

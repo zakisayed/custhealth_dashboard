@@ -8,6 +8,52 @@ const KEEP = [
   'source_table', 'transaction_id', 'node_alert_status', 'description', 'changed_fields', 'after_image',
 ];
 const CHUNK = 1500;
+const EMAIL_RE = /^[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
+
+// after_image / before_image arrive double-encoded with CSV-doubled quotes. Peel until it parses.
+function loose(text) {
+  let t = text;
+  for (let i = 0; i < 4; i++) {
+    if (t && typeof t === 'object') return t;
+    if (typeof t !== 'string') return null;
+    try { t = JSON.parse(t); continue; } catch { /* peel */ }
+    let t2 = t.trim();
+    if (t2.startsWith('"') && t2.endsWith('"')) t2 = t2.slice(1, -1);
+    t2 = t2.replaceAll('""', '"');
+    if (t2 === t) return null;
+    t = t2;
+  }
+  return t && typeof t === 'object' ? t : null;
+}
+
+// Owner and steward records pair a user id with an email, e.g. system_owner_id + system_owner_email.
+// Collect those pairs so each user in the Users table can show their email.
+export function emailMap(data) {
+  const votes = new Map();
+  const walk = (o) => {
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    if (!o || typeof o !== 'object') return;
+    for (const [k, v] of Object.entries(o)) {
+      if (/email$/i.test(k) && typeof v === 'string' && EMAIL_RE.test(v.trim())) {
+        const pre = k.slice(0, -5);
+        const idKey = [pre + 'id', pre + 'user_id', 'user_id', 'id'].find((x) => o[x] !== undefined && o[x] !== null && o[x] !== '');
+        if (idKey) {
+          const id = String(o[idKey]).trim(), em = v.trim().toLowerCase();
+          const m = votes.get(id) || new Map(); m.set(em, (m.get(em) || 0) + 1); votes.set(id, m);
+        }
+      } else if (v && typeof v === 'object') walk(v);
+    }
+  };
+  for (const r of data) {
+    for (const c of ['after_image', 'before_image']) {
+      const s = r[c];
+      if (s && s.includes('@')) walk(loose(s));
+    }
+  }
+  const out = new Map();
+  for (const [id, m] of votes) out.set(id, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]);
+  return out;
+}
 
 const STEPS_HTML = `
   <div class="card">
@@ -135,9 +181,12 @@ async function start(file, target) {
     mark('read', 'done', `Read ${fmt.n(parsed.data.length)} rows`);
     const missing = REQUIRED.filter((c) => !cols.includes(c));
     if (missing.length) { mark('check', 'err', `Missing columns: ${missing.join(', ')}`); stop(''); return; }
+    const emails = emailMap(parsed.data);
     const rows = parsed.data.map((r) => {
       const o = {};
       for (const k of KEEP) if (r[k] !== undefined && r[k] !== '') o[k] = r[k];
+      const em = emails.get(String(r.user_id || '').trim().replace(/^'+/, ''));
+      if (em) o.user_email = em;
       const isAlarm = r.entity_type === 'ALM' || r.source_table === 'saws_alarms';
       if (!isAlarm) delete o.after_image;
       if (o.changed_fields) o.changed_fields = String((o.changed_fields.match(/field_name/g) || []).length);

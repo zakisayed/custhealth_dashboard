@@ -38,7 +38,8 @@ Each customer has its own dashboard. The sidebar lists every customer with its c
 2. Rows are deduplicated by the `SK` key. Uploading overlapping files is safe: rows already stored are skipped.
 3. Mirrored rows (the same change written to `nodes` and `node_dynamo_log`) are counted once.
 4. Bulk or scripted activity is flagged as automated when one user saves 15 or more separate transactions in a minute, or keeps up 6 per minute over a 10-minute window. Automated events still show in the charts but do not count as engagement.
-5. Daily rollups are built in each account's time zone (set it in Account settings). Sessions are estimated using a 30-minute inactivity gap, since the export has no login events.
+5. User emails are read from the owner and steward records inside `after_image` and `before_image` (for example `system_owner_id` with `system_owner_email`) and shown in the Users table. A user who never appears in such a record shows "Not found".
+6. Daily rollups are built in each account's time zone (set it in Account settings). Sessions are estimated using a 30-minute inactivity gap, since the export has no login events.
 
 ## Health model
 
