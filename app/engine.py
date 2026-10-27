@@ -143,7 +143,7 @@ def _pct(values: list[float], q: float) -> float:
 
 def _delta(cur: float, prev: float) -> float | None:
     if prev == 0:
-        return None if cur == 0 else 100.0
+        return None if cur else 0.0
     return round((cur - prev) / prev * 100, 1)
 
 
