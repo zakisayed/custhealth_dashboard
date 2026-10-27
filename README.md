@@ -4,9 +4,18 @@ Upload the platform activity export (CSV, same columns as `brown_and_caldwell.cs
 
 Stack: FastAPI (Python) API, plain HTML/CSS/JS frontend, Supabase Postgres for storage, Vercel for hosting.
 
+## Customers
+
+Each customer has its own dashboard. The sidebar lists every customer with its current score and status. Select one to open its dashboard, and use Upload data under it to add new exports.
+
+- Add customer: enter a name and drop the customer's first export. The account ID is read from the file.
+- Upload for a customer: the file must contain only that customer's account ID. A file for a different customer, or a file that mixes several accounts, is rejected before anything is stored. If you add a "new" customer whose account ID already exists, the app offers to add the file to the existing customer instead.
+- Each customer is scored through the last day of its own data, so customers uploaded on different days are not penalized. A customer whose latest data is more than 14 days old is flagged as stale in the sidebar, the overview and its dashboard.
+- Remove customer (Settings, type the name to confirm) deletes the customer and its history. The other customers are rescored because peer benchmarks change.
+
 ## What it shows
 
-- Portfolio: every account with health score, status (Healthy, Needs attention, At risk), calibration state, 14-day actions and trend, active users, last activity, alarms. Filters, search, sorting, and a CSV export of the daily summary.
+- All customers: every customer with health score, status (Healthy, Needs attention, At risk), calibration state, 14-day actions and trend, active users, last activity, alarms. Filters, search, sorting, and a CSV export of the daily summary.
 - Account page: score history, the components behind the score, daily activity (by action, by object type, manual vs automated), object type usage, a weekday by hour heatmap, a users table, system alarms, DQ rule runs, and the daily summary table.
 - Upload page: drag and drop the CSV. The browser parses it and sends it in chunks, so files bigger than Vercel's 4.5 MB request limit work.
 - Scoring model page: weights, thresholds and the baselines learned for each account.
@@ -75,11 +84,13 @@ DATABASE_URL=postgresql://localhost/cstest python3 tests/test_history.py path/to
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/status` | Row counts, data range, last upload |
-| POST | `/api/uploads` | Start an upload, returns `upload_id` |
+| POST | `/api/uploads` | Start an upload (`account_id` for an existing customer, or `customer_name` for a new one), returns `upload_id` |
 | POST | `/api/uploads/{id}/rows` | Send up to 5,000 rows |
 | POST | `/api/uploads/{id}/complete` | Finish and recompute |
 | POST | `/api/uploads/csv` | Single multipart upload (small files or scripts) |
-| GET | `/api/uploads` | Upload history |
+| GET | `/api/uploads?account_id=` | Upload history, optionally for one customer |
+| GET | `/api/customers` | Customer list with score, status and data freshness |
+| DELETE | `/api/accounts/{id}` | Remove a customer and its history |
 | POST | `/api/recompute` | Rebuild rollups and scores |
 | GET | `/api/portfolio` | All accounts with latest health |
 | GET / PATCH | `/api/accounts/{id}` | Account detail, or update name, time zone, seats |

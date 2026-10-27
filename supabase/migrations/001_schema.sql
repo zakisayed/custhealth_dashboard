@@ -36,6 +36,9 @@ create table if not exists uploads (
   created_at     timestamptz not null default now(),
   completed_at   timestamptz
 );
+-- Customer-scoped uploads: the customer the file was uploaded for, and the name given to a new customer.
+alter table uploads add column if not exists target_account_id bigint;
+alter table uploads add column if not exists customer_name text;
 
 -- One row per CDC log row, normalized. (account_id, event_key) is the log's own SK,
 -- so uploading an overlapping file never double counts.

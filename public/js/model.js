@@ -49,7 +49,7 @@ export async function renderModel(view) {
       <div class="table-wrap"><table><thead><tr><th>Account</th><th>First activity</th><th class="n">Active days</th><th class="n">Usual gap (days)</th><th class="n">Baseline windows</th><th>Engagement reference</th></tr></thead>
       <tbody>${Object.entries(run.per_account).map(([id, p]) => {
         const acct = (state.portfolio?.accounts || []).find((a) => String(a.account_id) === id);
-        return `<tr><td><a href="#/account/${id}">${esc(names.get(id) || id)}</a></td><td>${fmt.date(p.first_activity)}</td><td class="n num">${p.active_days}</td><td class="n num">${fmt.n(p.expected_gap_days)}</td><td class="n num">${p.baseline_windows} of ${run.baseline_windows}</td><td class="small">${esc(acct?.metrics.engagement_reference_source || '–')} (${fmt.n(acct?.metrics.engagement_reference)})</td></tr>`;
+        return `<tr><td><a href="#/c/${id}">${esc(names.get(id) || id)}</a></td><td>${fmt.date(p.first_activity)}</td><td class="n num">${p.active_days}</td><td class="n num">${fmt.n(p.expected_gap_days)}</td><td class="n num">${p.baseline_windows} of ${run.baseline_windows}</td><td class="small">${esc(acct?.metrics.engagement_reference_source || '–')} (${fmt.n(acct?.metrics.engagement_reference)})</td></tr>`;
       }).join('')}</tbody></table></div>` : '<p class="muted">Upload data to calibrate.</p>'}
       <p class="small muted" style="margin-top:var(--space-4)">All weights and thresholds can be changed with environment variables (see README).</p>
     </div>`;

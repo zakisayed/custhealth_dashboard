@@ -14,20 +14,34 @@ EVENT_COLS = [
 ]
 
 
-def create_upload(filename: str | None) -> dict:
+def create_upload(filename: str | None, target_account_id: int | None = None,
+                  customer_name: str | None = None) -> dict:
     with connect() as conn:
+        if target_account_id is not None and customer_name is None:
+            if not conn.execute("select 1 from accounts where account_id=%s", [target_account_id]).fetchone():
+                raise ValueError("customer not found")
         row = conn.execute(
-            "insert into uploads (filename) values (%s) returning upload_id, filename, status, created_at",
-            [filename],
+            """insert into uploads (filename, target_account_id, customer_name) values (%s, %s, %s)
+               returning upload_id, filename, status, created_at, target_account_id, customer_name""",
+            [filename, target_account_id, (customer_name or "").strip() or None],
         ).fetchone()
     return row
 
 
 def add_rows(upload_id: int, rows: list[dict]) -> dict:
+    with connect() as conn:
+        up = conn.execute("select filename, status, target_account_id, customer_name from uploads where upload_id=%s",
+                          [upload_id]).fetchone()
+    if not up:
+        raise ValueError("upload not found")
+    target = up["target_account_id"]
+
     events, rejected, errors = [], 0, []
     for i, raw in enumerate(rows):
         try:
             ev = normalize_row(raw)
+            if target is not None and ev["account_id"] != target:
+                raise ValueError(f"belongs to account {ev['account_id']}, not this customer ({target})")
             ev["upload_id"] = upload_id
             events.append(ev)
         except Exception as exc:  # keep going, report a sample
@@ -36,9 +50,8 @@ def add_rows(upload_id: int, rows: list[dict]) -> dict:
                 errors.append(f"row {i}: {exc}")
 
     with connect() as conn:
-        up = conn.execute("select filename, status from uploads where upload_id=%s for update", [upload_id]).fetchone()
-        if not up:
-            raise ValueError("upload not found")
+        up = conn.execute("select filename, status, customer_name from uploads where upload_id=%s for update",
+                          [upload_id]).fetchone()
         if up["status"] not in ("receiving",):
             raise ValueError(f"upload is {up['status']}")
 
@@ -49,7 +62,7 @@ def add_rows(upload_id: int, rows: list[dict]) -> dict:
             for aid in acct_ids:
                 conn.execute(
                     "insert into accounts (account_id, name) values (%s, %s) on conflict (account_id) do nothing",
-                    [aid, account_name_from_filename(up["filename"], aid)],
+                    [aid, up["customer_name"] or account_name_from_filename(up["filename"], aid)],
                 )
             users: dict[tuple, dict] = {}
             for e in events:

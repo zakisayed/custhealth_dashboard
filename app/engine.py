@@ -184,6 +184,9 @@ class _AccountSeries:
                 self.objects[o["activity_date"]].add(o["object_type"])
         self.active_dates = sorted(set(dates))
         self.first = min([r["activity_date"] for r in rows], default=None)
+        # Each customer is scored through the end of its own data, so customers uploaded on
+        # different days are not penalized for days their export does not cover yet.
+        self.through = max([r["activity_date"] for r in rows], default=None)
 
     def window_sum(self, series: dict, end: date, days: int) -> int:
         return sum(series.get(end - timedelta(i), 0) for i in range(days))
@@ -224,14 +227,15 @@ class _AccountSeries:
         return out
 
 
-def _peer_benchmarks(series: dict[int, _AccountSeries], data_through: date) -> dict:
-    """Typical account: median 14-day actions and active days across accounts with real history."""
+def _peer_benchmarks(series: dict[int, _AccountSeries]) -> dict:
+    """Typical account: median 14-day actions and active days across accounts with real history,
+    each measured at the end of its own data."""
     acts, days = [], []
     for s in series.values():
-        if s.first is None or (data_through - s.first).days + 1 < C.CURRENT_WINDOW:
+        if s.first is None or (s.through - s.first).days + 1 < C.CURRENT_WINDOW:
             continue
-        acts.append(s.window_sum(s.actions, data_through, C.CURRENT_WINDOW))
-        days.append(s.active_days(data_through, C.CURRENT_WINDOW))
+        acts.append(s.window_sum(s.actions, s.through, C.CURRENT_WINDOW))
+        days.append(s.active_days(s.through, C.CURRENT_WINDOW))
     return {
         "accounts": len(acts),
         "median_actions_14d": statistics.median(acts) if acts else None,
@@ -393,16 +397,16 @@ def _health(conn) -> dict:
 
     series = {a["account_id"]: _AccountSeries(a, rows[a["account_id"]], objs[a["account_id"]], users[a["account_id"]])
               for a in accts}
-    peers = _peer_benchmarks(series, through)
+    peers = _peer_benchmarks(series)
 
     conn.execute("delete from health_snapshots")
     out_rows = []
     for aid, s in series.items():
         if s.first is None:
             continue
-        peer_ok = peers["accounts"] - (1 if (through - s.first).days + 1 >= C.CURRENT_WINDOW else 0) >= C.MIN_PEERS
+        peer_ok = peers["accounts"] - (1 if (s.through - s.first).days + 1 >= C.CURRENT_WINDOW else 0) >= C.MIN_PEERS
         d = s.first
-        while d <= through:
+        while d <= s.through:
             res = _score_day(s, d, peers, peer_ok)
             out_rows.append((aid, d, res["score"], res["status"], res["confidence"],
                              Jsonb(res["components"]), Jsonb(res["reasons"]), Jsonb(res["metrics"])))
@@ -420,10 +424,11 @@ def _health(conn) -> dict:
         "per_account": {
             str(aid): {
                 "first_activity": s.first.isoformat() if s.first else None,
+                "data_through": s.through.isoformat() if s.through else None,
                 "active_days": len(s.active_dates),
-                "expected_gap_days": _clamp(_pct(s.gaps_before(through), 0.75) if len(s.gaps_before(through)) >= 4 else 7, 2, 14),
-                "baseline_windows": len(s.baseline_windows(through)),
-            } for aid, s in series.items()
+                "expected_gap_days": _clamp(_pct(s.gaps_before(s.through), 0.75) if len(s.gaps_before(s.through)) >= 4 else 7, 2, 14),
+                "baseline_windows": len(s.baseline_windows(s.through)),
+            } for aid, s in series.items() if s.through
         },
     }
     conn.execute("insert into calibration_runs (data_through, params) values (%s, %s)", [through, Jsonb(params)])

@@ -87,6 +87,8 @@ export const COMP_LABEL = {
 };
 
 export const ICON = {
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
   healthy: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3.5 8.5l3 3 6-7"/></svg>',
   watch: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 4.5v4.5M8 11.5v.5"/><circle cx="8" cy="8" r="6.5" stroke-width="1.6"/></svg>',
   at_risk: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 2l6.5 11.5h-13z" stroke-linejoin="round" stroke-width="1.6"/><path d="M8 6.5v3M8 11.5v.3"/></svg>',

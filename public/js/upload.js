@@ -1,4 +1,4 @@
-import { crumbs, refreshShell } from './app.js';
+import { crumbs, refreshShell, state } from './app.js';
 import { api, fmt, esc, ICON, toast } from './lib.js';
 
 const REQUIRED = ['account_id', 'timestamp', 'event_type', 'entity_type', 'user_id'];
@@ -9,60 +9,95 @@ const KEEP = [
 ];
 const CHUNK = 1500;
 
-export async function renderUpload(view) {
-  crumbs('<b>Upload data</b>');
-  view.innerHTML = `
-    <div class="page-head"><div><h1>Upload activity log</h1>
-      <div class="sub">Drop a CSV export. New rows are added to history, overlaps are ignored, and every score is recalculated.</div></div></div>
-    <div class="grid cols-2">
-      <div>
-        <label class="drop" id="drop" tabindex="0">
-          ${ICON.file}
-          <h2>Drop CSV here or browse</h2>
-          <p>Same format as the Brown and Caldwell export. Any size, any number of accounts.</p>
-          <input type="file" id="file" accept=".csv,text/csv" hidden />
-        </label>
-        <div class="card section" id="job" hidden></div>
-      </div>
-      <div class="card">
-        <h2>What happens on upload</h2>
-        <ul class="steps" style="margin-top:var(--space-4)">
-          <li class="done">${ICON.check}Parsed in your browser, large JSON columns dropped</li>
-          <li class="done">${ICON.check}Rows normalized: actions, object types, statuses, system user</li>
-          <li class="done">${ICON.check}Deduplicated by log key, so re-uploads are safe</li>
-          <li class="done">${ICON.check}Mirrored DQ rows and machine-speed bursts flagged</li>
-          <li class="done">${ICON.check}Daily rollups rebuilt per account, user and day</li>
-          <li class="done">${ICON.check}Baselines recalibrated, health history rescored</li>
-        </ul>
-        <p class="small muted" style="margin-top:var(--space-4)">Required columns: ${REQUIRED.map((c) => `<code>${c}</code>`).join(' ')}</p>
-      </div>
-    </div>
-    <div class="card section">
-      <div class="card-head"><div><h2>Upload history</h2></div></div>
-      <div class="table-wrap"><table id="hist"></table></div>
-    </div>`;
+const STEPS_HTML = `
+  <div class="card">
+    <h2>What happens on upload</h2>
+    <ul class="steps" style="margin-top:var(--space-4)">
+      <li class="done">${ICON.check}Parsed in your browser, large JSON columns dropped</li>
+      <li class="done">${ICON.check}Checked that every row belongs to this customer</li>
+      <li class="done">${ICON.check}Deduplicated by log key, so overlapping exports are safe</li>
+      <li class="done">${ICON.check}Mirrored DQ rows and machine-speed bursts flagged</li>
+      <li class="done">${ICON.check}Daily rollups rebuilt per user and day</li>
+      <li class="done">${ICON.check}Baselines recalibrated, health history rescored</li>
+    </ul>
+    <p class="small muted" style="margin-top:var(--space-4)">Required columns: ${REQUIRED.map((c) => `<code>${c}</code>`).join(' ')}</p>
+  </div>`;
 
+function dropZone(sub) {
+  return `<label class="drop" id="drop" tabindex="0">
+      ${ICON.file}
+      <h2>Drop CSV here or browse</h2>
+      <p>${sub}</p>
+      <input type="file" id="file" accept=".csv,text/csv" hidden />
+    </label>`;
+}
+
+function wireDrop(onFile) {
   const drop = document.getElementById('drop'), input = document.getElementById('file');
   drop.addEventListener('click', (e) => { if (e.target !== input) input.click(); });
   drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } });
   ['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
-  drop.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f) start(f); });
-  input.addEventListener('change', () => { if (input.files[0]) start(input.files[0]); input.value = ''; });
-  loadHistory();
+  drop.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f) onFile(f); });
+  input.addEventListener('change', () => { if (input.files[0]) onFile(input.files[0]); input.value = ''; });
 }
 
-async function loadHistory() {
-  const rows = await api('/api/uploads');
+// Upload more data for an existing customer.
+export async function renderUpload(view, accountId) {
+  const c = (state.customers || []).find((x) => x.account_id === accountId);
+  crumbs(`<a href="#/">Customers</a><span class="faint">/</span><a href="#/c/${c.account_id}">${esc(c.name)}</a><span class="faint">/</span><b>Upload</b>`);
+  view.innerHTML = `
+    <div class="page-head"><div><h1>Upload data for ${esc(c.name)}</h1>
+      <div class="sub">Account #${c.account_id} · ${c.data_through ? `data from ${fmt.date(c.data_from)} to ${fmt.date(c.data_through)}` : 'no data yet'} · ${fmt.n(c.uploads)} upload${c.uploads == 1 ? '' : 's'}</div></div>
+      <div class="actions"><a class="btn" href="#/c/${c.account_id}">${ICON.back}Back to dashboard</a></div></div>
+    <div class="grid cols-2">
+      <div>
+        ${dropZone(`Export for ${esc(c.name)} only. New rows are added to its history, rows already stored are skipped.`)}
+        <div class="card section" id="job" hidden></div>
+      </div>
+      ${STEPS_HTML}
+    </div>
+    <div class="card section">
+      <div class="card-head"><div><h2>Upload history</h2><div class="sub">Files uploaded for ${esc(c.name)}</div></div></div>
+      <div class="table-wrap"><table id="hist"></table></div>
+    </div>`;
+  wireDrop((f) => start(f, { accountId: c.account_id, name: c.name }));
+  loadHistory(c.account_id);
+}
+
+// Add a new customer: name + first CSV.
+export async function renderNewCustomer(view) {
+  crumbs('<a href="#/">Customers</a><span class="faint">/</span><b>Add customer</b>');
+  const first = !(state.customers || []).length;
+  view.innerHTML = `
+    <div class="page-head"><div><h1>${first ? 'Add your first customer' : 'Add customer'}</h1>
+      <div class="sub">Give the customer a name and upload its activity export. The account ID is read from the file.</div></div></div>
+    <div class="grid cols-2">
+      <div>
+        <div class="card" style="margin-bottom:var(--space-4)">
+          <div class="field" style="margin:0"><label for="cust-name">Customer name</label>
+            <input id="cust-name" placeholder="For example, Brown and Caldwell" autocomplete="off" />
+            <span class="hint">Leave empty to use the file name. You can rename it later in Settings.</span></div>
+        </div>
+        ${dropZone('One customer per file, same format as the platform activity export.')}
+        <div class="card section" id="job" hidden></div>
+      </div>
+      ${STEPS_HTML}
+    </div>`;
+  wireDrop((f) => start(f, { accountId: null, name: document.getElementById('cust-name').value.trim() }));
+}
+
+async function loadHistory(accountId) {
+  const rows = await api(`/api/uploads?account_id=${accountId}`);
   const el = document.getElementById('hist');
   if (!el) return;
   if (!rows.length) { el.innerHTML = '<tbody><tr><td class="muted">No uploads yet</td></tr></tbody>'; return; }
   const st = { complete: 'healthy', failed: 'at_risk', processing: 'watch', receiving: 'watch' };
   el.innerHTML = `<thead><tr><th>When</th><th>File</th><th>Status</th><th class="n">Rows</th><th class="n">New</th><th class="n">Already stored</th><th class="n">Rejected</th><th>Covers</th></tr></thead>
-    <tbody>${rows.map((u) => `<tr><td>${fmt.time(u.created_at)}</td><td>${esc(u.filename || '–')}</td>
+    <tbody>${rows.map((u) => `<tr><td class="nw">${fmt.time(u.created_at)}</td><td>${esc(u.filename || '–')}</td>
       <td><span class="badge ${st[u.status] || 'info'}">${esc(u.status)}</span></td>
       <td class="n num">${fmt.n(u.rows_received)}</td><td class="n num">${fmt.n(u.rows_inserted)}</td><td class="n num">${fmt.n(u.rows_duplicate)}</td><td class="n num">${fmt.n(u.rows_rejected)}</td>
-      <td class="small">${u.min_ts ? `${fmt.short(u.min_ts)} to ${fmt.short(u.max_ts)}` : '–'}</td></tr>`).join('')}</tbody>`;
+      <td class="small nw">${u.min_ts ? `${fmt.short(u.min_ts)} to ${fmt.short(u.max_ts)}` : '–'}</td></tr>`).join('')}</tbody>`;
 }
 
 function parse(file) {
@@ -74,12 +109,12 @@ function parse(file) {
   });
 }
 
-async function start(file) {
+async function start(file, target) {
   const job = document.getElementById('job');
   job.hidden = false;
   const steps = [
     ['read', `Reading ${esc(file.name)} (${fmt.n(file.size / 1048576, 1)} MB)`],
-    ['check', 'Checking columns'], ['send', 'Uploading rows'], ['score', 'Rebuilding rollups and scores'],
+    ['check', 'Checking columns and customer'], ['send', 'Uploading rows'], ['score', 'Rebuilding rollups and scores'],
   ];
   job.innerHTML = `<h2>Processing ${esc(file.name)}</h2>
     <ul class="steps" id="steps">${steps.map(([k, l]) => `<li id="st-${k}">${ICON.dotc}<span>${l}</span></li>`).join('')}</ul>
@@ -89,13 +124,17 @@ async function start(file) {
     li.className = cls; li.querySelector('svg').outerHTML = cls === 'err' ? ICON.x : ICON.check;
     if (text) li.querySelector('span').textContent = text;
   };
+  const stop = (html) => {
+    document.getElementById('result').innerHTML = html;
+    document.querySelectorAll('#steps li').forEach((li) => { if (!li.className) { li.className = 'skip'; li.querySelector('span').textContent += ' · skipped'; } });
+  };
   const bar = document.getElementById('bar');
   try {
     const parsed = await parse(file);
     const cols = parsed.meta.fields || [];
     mark('read', 'done', `Read ${fmt.n(parsed.data.length)} rows`);
     const missing = REQUIRED.filter((c) => !cols.includes(c));
-    if (missing.length) { mark('check', 'err', `Missing columns: ${missing.join(', ')}`); return; }
+    if (missing.length) { mark('check', 'err', `Missing columns: ${missing.join(', ')}`); stop(''); return; }
     const rows = parsed.data.map((r) => {
       const o = {};
       for (const k of KEEP) if (r[k] !== undefined && r[k] !== '') o[k] = r[k];
@@ -104,10 +143,46 @@ async function start(file) {
       if (o.changed_fields) o.changed_fields = String((o.changed_fields.match(/field_name/g) || []).length);
       return o;
     });
-    const accts = new Set(rows.map((r) => r.account_id));
-    mark('check', 'done', `Columns OK · ${accts.size} account${accts.size > 1 ? 's' : ''}`);
 
-    const up = await api('/api/uploads', { json: { filename: file.name } });
+    // customer checks: one account per file, and it must match the selected customer
+    const counts = new Map();
+    for (const r of rows) { const id = String(r.account_id || '').trim(); if (id) counts.set(id, (counts.get(id) || 0) + 1); }
+    const ids = [...counts.keys()];
+    const known = (id) => (state.customers || []).find((c) => String(c.account_id) === String(id));
+    if (!ids.length) { mark('check', 'err', 'No account_id values found in the file'); stop(''); return; }
+    if (ids.length > 1) {
+      mark('check', 'err', `This file has ${ids.length} accounts. Upload one customer per file.`);
+      stop(`<div class="alert err" style="margin-top:var(--space-4)">${ICON.at_risk}<div>Accounts in this file: ${ids.map((id) => `${esc(known(id)?.name || 'new')} #${esc(id)} (${fmt.n(counts.get(id))} rows)`).join(', ')}</div></div>`);
+      return;
+    }
+    const fileAcct = ids[0];
+    if (target.accountId && String(target.accountId) !== fileAcct) {
+      const other = known(fileAcct);
+      mark('check', 'err', `This file is for account #${fileAcct}, not ${target.name} (#${target.accountId})`);
+      stop(`<div class="alert err" style="margin-top:var(--space-4)">${ICON.at_risk}<div>Nothing was uploaded.
+        ${other ? `This export belongs to <b>${esc(other.name)}</b>. <a href="#/c/${other.account_id}/upload">Upload it there</a>.` : 'It belongs to a customer that is not set up yet. <a href="#/new">Add it as a new customer</a>.'}</div></div>`);
+      return;
+    }
+    if (!target.accountId) {
+      const existing = known(fileAcct);
+      if (existing) {
+        mark('check', 'err', `Account #${fileAcct} is already set up as ${existing.name}`);
+        stop(`<div class="alert info" style="margin-top:var(--space-4)">${ICON.info}<div>Nothing was uploaded yet. This export belongs to an existing customer.</div></div>
+          <div style="display:flex;gap:var(--space-2);margin-top:var(--space-4);flex-wrap:wrap">
+            <button class="btn primary" id="add-existing">Add to ${esc(existing.name)}</button>
+            <a class="btn" href="#/c/${existing.account_id}">Open ${esc(existing.name)}</a></div>`);
+        document.getElementById('add-existing').onclick = () => {
+          location.hash = `#/c/${existing.account_id}/upload`;
+          setTimeout(() => start(file, { accountId: existing.account_id, name: existing.name }), 150);
+        };
+        return;
+      }
+    }
+    mark('check', 'done', target.accountId ? `Columns OK · all rows belong to ${target.name}` : `Columns OK · new customer, account #${fileAcct}`);
+
+    const up = await api('/api/uploads', { json: target.accountId
+      ? { filename: file.name, account_id: target.accountId }
+      : { filename: file.name, customer_name: target.name || null } });
     const tot = { inserted: 0, duplicates: 0, rejected: 0, errors: [] };
     for (let i = 0; i < rows.length; i += CHUNK) {
       const r = await api(`/api/uploads/${up.upload_id}/rows`, { json: { rows: rows.slice(i, i + CHUNK) } });
@@ -117,22 +192,23 @@ async function start(file) {
     mark('send', 'done', `Uploaded ${fmt.n(rows.length)} rows`);
     const done = await api(`/api/uploads/${up.upload_id}/complete`, { json: {} });
     bar.style.width = '100%';
-    mark('score', 'done', `Scored ${done.recompute.accounts} account${done.recompute.accounts > 1 ? 's' : ''} through ${fmt.date(done.recompute.data_through)}`);
-    document.getElementById('result').innerHTML = `
+    await refreshShell();
+    const cust = known(fileAcct);
+    mark('score', 'done', `Scored ${cust?.name || 'customer'} through ${fmt.date(cust?.data_through)}`);
+    stop(`
       <div class="stat-row">
         <div><b>${fmt.n(tot.inserted)}</b><span>New events</span></div>
         <div><b>${fmt.n(tot.duplicates)}</b><span>Already stored</span></div>
         <div><b>${fmt.n(tot.rejected)}</b><span>Rejected</span></div>
-        <div><b>${fmt.short(done.upload.min_ts)} to ${fmt.short(done.upload.max_ts)}</b><span>Date range</span></div>
+        <div><b>${done.upload.min_ts ? `${fmt.short(done.upload.min_ts)} to ${fmt.short(done.upload.max_ts)}` : '–'}</b><span>Date range</span></div>
       </div>
       ${tot.errors.length ? `<div class="alert err" style="margin-top:var(--space-4)">${ICON.at_risk}<div>${tot.errors.map(esc).join('<br>')}</div></div>` : ''}
       <div style="display:flex;gap:var(--space-2);margin-top:var(--space-5);flex-wrap:wrap">
-        <a class="btn primary" href="#/">View portfolio</a>
-        ${done.upload.account_ids.length === 1 ? `<a class="btn" href="#/account/${done.upload.account_ids[0]}">Open account</a>` : ''}
-      </div>`;
+        <a class="btn primary" href="#/c/${fileAcct}">Open ${esc(cust?.name || 'dashboard')}</a>
+        <a class="btn" href="#/">All customers</a>
+      </div>`);
     toast('Upload complete');
-    await refreshShell();
-    loadHistory();
+    if (target.accountId) loadHistory(target.accountId);
   } catch (e) {
     console.error(e);
     const open = [...document.querySelectorAll('#steps li')].find((li) => !li.className);

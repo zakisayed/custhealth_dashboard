@@ -5,7 +5,7 @@ import {
 } from './lib.js';
 import { thresholdBands } from './portfolio.js';
 
-let range = 30, mode = 'action', detailUser = 'all';
+let range = 30, mode = 'action', detailUser = 'all', currentThrough = null;
 const ACTIONS = ['created', 'updated', 'deleted', 'executed'];
 const OBJECTS = ['columns', 'etl_programs', 'bi_tables', 'dq_rules', 'data_domains', 'use_cases', 'db_tables', 'jobs', 'other'];
 
@@ -13,11 +13,14 @@ export async function renderAccount(view, id) {
   view.innerHTML = skeleton();
   const [d, daily] = await Promise.all([api(`/api/accounts/${id}`), api(`/api/accounts/${id}/daily`)]);
   const a = d.account, L = d.latest, th = d.thresholds;
-  crumbs(`<a href="#/">Portfolio</a><span class="faint">/</span><b>${esc(a.name)}</b>`);
+  crumbs(`<a href="#/">Customers</a><span class="faint">/</span><b>${esc(a.name)}</b>`);
   if (!L) {
-    view.innerHTML = `<div class="card empty"><h2>No scored activity yet</h2><p>Upload a log for this account.</p></div>`;
+    view.innerHTML = `<div class="card empty"><h2>No scored activity yet</h2><p>Upload an activity export for ${esc(a.name)}.</p>
+      <a class="btn primary" href="#/c/${a.account_id}/upload">${ICON.upload}Upload CSV</a></div>`;
     return;
   }
+  const F = d.freshness || {};
+  currentThrough = L.as_of_date;
   const m = L.metrics, comp = L.components;
   const hist = d.history.map((h) => ({ ...h, score: +h.score }));
   const prev7 = hist.length > 7 ? hist[hist.length - 8].score : null;
@@ -30,13 +33,14 @@ export async function renderAccount(view, id) {
         <div style="display:flex;gap:var(--space-3);align-items:center;flex-wrap:wrap">
           <h1>${esc(a.name)}</h1>${badge(L.status, 'lg')}${confBadge(L.confidence)}
         </div>
-        <div class="sub">Account #${a.account_id} · ${esc(a.timezone)} days · scored ${fmt.date(L.as_of_date)} · ${m.history_days} days of history</div>
+        <div class="sub">Account #${a.account_id} · ${esc(a.timezone)} days · data ${fmt.date(F.data_from)} to ${fmt.date(L.as_of_date)} · ${m.history_days} days of history · last upload ${F.last_upload ? fmt.time(F.last_upload) : 'never'}</div>
       </div>
       <div class="head-meta">
         <button class="btn" id="dl-csv">${ICON.download}Daily summary CSV</button>
         <button class="btn" id="settings">${ICON.gear}Settings</button>
       </div>
     </div>
+    ${F.stale_days > 14 ? `<div class="alert info" style="margin-bottom:var(--space-4)">${ICON.info}<div>The latest data for ${esc(a.name)} is from ${fmt.date(F.data_through)}, ${F.stale_days} days ago. Scores reflect usage up to that date. <a href="#/c/${a.account_id}/upload">Upload a newer export</a> to refresh them.</div></div>` : ''}
 
     <div class="grid kpis">
       <div class="card kpi"><div class="label">Health score</div>
@@ -49,8 +53,8 @@ export async function renderAccount(view, id) {
         <div class="value num">${m.active_users_14d}<small> of ${m.user_pool}</small></div>
         <div class="foot">${m.active_users_7d} this week, ${m.active_users_prev_7d} last week</div></div>
       <div class="card kpi"><div class="label">Last user activity</div>
-        <div class="value num" style="font-size:var(--text-lg);margin-top:var(--space-3)">${fmt.ago(m.days_since_activity)}</div>
-        <div class="foot">Usual gap ${fmt.n(m.expected_gap_days)} days · ${m.active_days_14d} active days in 14</div></div>
+        <div class="value num" style="font-size:var(--text-lg);margin-top:var(--space-3)">${fmt.date(m.last_activity_date)}</div>
+        <div class="foot">${m.days_since_activity ? `${m.days_since_activity} day${m.days_since_activity > 1 ? 's' : ''} before the data ends` : 'On the last day of data'} · usual gap ${fmt.n(m.expected_gap_days)} days · ${m.active_days_14d} active days in 14</div></div>
       <div class="card kpi"><div class="label">Feature adoption, 30 days</div>
         <div class="value num">${types.length}<small> object types</small></div>
         <div class="foot" title="${esc(types.map(objLabel).join(', '))}">${esc(types.map(objLabel).join(', ') || 'None')}</div></div>
@@ -264,7 +268,7 @@ function drawHeat(hours) {
 }
 
 function drawUsers(users, tz, th) {
-  const through = state.status?.data_through;
+  const through = currentThrough;
   const rows = users.map((u) => {
     const daysSince = through ? Math.round((new Date(through) - new Date(String(u.last_day))) / 86400000) : null;
     const st = u.actor_type === 'system' ? 'system' : daysSince <= 14 ? 'active' : 'inactive';
@@ -321,18 +325,41 @@ function openSettings(a) {
   const zones = (Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : ['UTC', 'America/Los_Angeles', 'America/Denver', 'America/Chicago', 'America/New_York', 'Europe/London', 'Asia/Karachi']);
   if (!zones.includes('UTC')) zones.unshift('UTC');
   dr.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center"><h2>Account settings</h2><button class="btn" id="dr-close" aria-label="Close">${ICON.x}</button></div>
+    <div style="display:flex;justify-content:space-between;align-items:center"><h2>Customer settings</h2><button class="btn" id="dr-close" aria-label="Close">${ICON.x}</button></div>
     <div class="field"><label for="s-name">Display name</label><input id="s-name" value="${esc(a.name)}" /></div>
     <div class="field"><label for="s-tz">Time zone</label><select id="s-tz">${zones.map((z) => `<option ${z === a.timezone ? 'selected' : ''}>${z}</option>`).join('')}</select>
       <span class="hint">Sets day boundaries and work-hour heatmap. Changing it rebuilds this account's history.</span></div>
     <div class="field"><label for="s-seats">Licensed seats</label><input id="s-seats" type="number" min="0" value="${a.licensed_seats ?? ''}" placeholder="Not set" />
       <span class="hint">Optional. User breadth uses seats when set, otherwise users seen in 90 days.</span></div>
+    <div class="danger-zone">
+      <h3 style="font-size:var(--text-sm);margin:0 0 var(--space-2)">Remove customer</h3>
+      <p class="hint" style="margin:0 0 var(--space-3)">Deletes ${esc(a.name)} and all of its stored events, rollups and scores. Other customers are rescored. This cannot be undone.</p>
+      <div id="rm-box"><button class="btn danger" id="dr-remove">${ICON.trash}Remove ${esc(a.name)}</button></div>
+    </div>
     <div class="actions"><button class="btn" id="dr-cancel">Cancel</button><button class="btn primary" id="dr-save">Save</button></div>`;
   const close = () => { dr.classList.remove('open'); bg.classList.remove('open'); dr.setAttribute('aria-hidden', 'true'); };
   dr.classList.add('open'); bg.classList.add('open'); dr.setAttribute('aria-hidden', 'false');
   bg.onclick = close;
   document.getElementById('dr-close').onclick = close;
   document.getElementById('dr-cancel').onclick = close;
+  document.getElementById('dr-remove').onclick = () => {
+    const box = document.getElementById('rm-box');
+    box.innerHTML = `<div class="field" style="margin:0"><label for="rm-confirm">Type the customer name to confirm</label>
+      <input id="rm-confirm" autocomplete="off" placeholder="${esc(a.name)}" /></div>
+      <button class="btn danger solid" id="rm-go" disabled style="margin-top:var(--space-3)">${ICON.trash}Remove permanently</button>`;
+    const inp = document.getElementById('rm-confirm'), go = document.getElementById('rm-go');
+    inp.focus();
+    inp.oninput = () => { go.disabled = inp.value.trim() !== a.name.trim(); };
+    go.onclick = async () => {
+      go.disabled = true; go.textContent = 'Removing…';
+      try {
+        await api(`/api/accounts/${a.account_id}`, { method: 'DELETE' });
+        close(); toast(`${a.name} removed`);
+        await refreshShell();
+        location.hash = '#/';
+      } catch (err) { go.disabled = false; go.textContent = 'Remove permanently'; toast(err.message); }
+    };
+  };
   document.getElementById('dr-save').onclick = async (e) => {
     const btn = e.currentTarget; btn.disabled = true; btn.textContent = 'Saving…';
     const body = { name: document.getElementById('s-name').value.trim() || null };
