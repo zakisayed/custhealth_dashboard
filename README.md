@@ -116,4 +116,4 @@ Send `X-Dashboard-Key` when `DASHBOARD_KEY` is set.
 | --- | --- |
 | Database not reachable: ... IPv6 only | `DATABASE_URL` points at `db.<ref>.supabase.co`. Use the shared pooler string (`aws-0-<region>.pooler.supabase.com:6543`). |
 | Database not reachable: ... password authentication failed | Wrong password, or special characters not URL-encoded. Reset it under Project Settings, Database. |
-| Not Found (path shown) | The API has no route for that path. Redeploy the whole project (not only `public/`) and keep `vercel.json` in the project root. `/api/status` returns `api_version: 2` on the current backend. |
+| Not Found (path shown) | Usually an old backend. Redeploy the whole project root (the folder with `vercel.json`, `app/`, `api/` and `public/`), not only `public/`. Open `https://<your-app>.vercel.app/api/status` and confirm it returns `"api_version": 2`. Vercel may run the app from `api/index.py` or detect `app/main.py` as a FastAPI app; both work. |
