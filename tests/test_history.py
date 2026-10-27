@@ -4,7 +4,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from fastapi.testclient import TestClient
 from app.main import app
 from app.normalize import KEEP_COLUMNS
-src = sys.argv[1]; c = TestClient(app); random.seed(1)
+src = sys.argv[1]; c = TestClient(app)
+sys.path.insert(0, 'tests')
+from _auth import sign_in  # noqa: E402
+sign_in(c); random.seed(1)
 base = []
 with open(src, encoding="utf-8-sig") as f:
     for r in csv.DictReader(f):

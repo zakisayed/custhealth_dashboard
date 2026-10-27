@@ -4,7 +4,6 @@ from __future__ import annotations
 import csv
 import io
 import os
-import secrets
 from collections import defaultdict
 from datetime import timedelta
 from pathlib import Path
@@ -17,6 +16,7 @@ from urllib.parse import parse_qsl, urlencode
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from . import auth
 from . import config as C
 from .db import connect, ensure_schema
 from .engine import recompute
@@ -52,23 +52,55 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.add_middleware(VercelPathFix)  # added last, so it runs first
 
 _schema_ready = False
-API_VERSION = 2  # 2 = multi-customer (adds /api/customers, per-customer uploads)
+API_VERSION = 3  # 3 = login and users; 2 = multi-customer (adds /api/customers, per-customer uploads)
+
+
+PUBLIC_PATHS = {"/api/ping", "/api/auth/login"}
+# reachable while the user still has to replace a temporary password
+PASSWORD_CHANGE_PATHS = {"/api/auth/me", "/api/auth/change-password", "/api/auth/logout"}
+
+
+def _admin_only(method: str, path: str) -> bool:
+    if path.startswith("/api/users"):
+        return True
+    if path.startswith("/api/model") and method != "GET":
+        return True
+    # removing a customer or editing its settings
+    return method in ("DELETE", "PATCH") and path.startswith("/api/accounts/")
 
 
 @app.middleware("http")
 async def guard(request: Request, call_next):
     global _schema_ready
     path = request.url.path
-    if path.startswith("/api/") and path != "/api/ping":
-        key = os.environ.get("DASHBOARD_KEY")
-        if key and not secrets.compare_digest(request.headers.get("x-dashboard-key", ""), key):
-            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-        if not _schema_ready and os.environ.get("AUTO_MIGRATE", "1") == "1":
-            try:
-                ensure_schema()
-                _schema_ready = True
-            except Exception as exc:  # surface config problems clearly
-                return JSONResponse({"detail": f"Database not reachable: {exc}"}, status_code=503)
+    if not path.startswith("/api/") or path == "/api/ping" or request.method == "OPTIONS":
+        return await call_next(request)
+    if not _schema_ready and os.environ.get("AUTO_MIGRATE", "1") == "1":
+        try:
+            ensure_schema()
+            with connect() as conn:
+                auth.ensure_admin(conn)
+            _schema_ready = True
+        except Exception as exc:  # surface config problems clearly
+            return JSONResponse({"detail": f"Database not reachable: {exc}"}, status_code=503)
+    if path in PUBLIC_PATHS:
+        return await call_next(request)
+    header = request.headers.get("authorization", "")
+    token = header[7:].strip() if header.lower().startswith("bearer ") else None
+    try:
+        with connect() as conn:
+            user = auth.user_from_token(conn, token)
+            C.load_model(conn)
+    except auth.AuthFailure as exc:
+        return JSONResponse({"detail": str(exc), "code": "auth_required"}, status_code=401)
+    except Exception as exc:
+        return JSONResponse({"detail": f"Database not reachable: {exc}"}, status_code=503)
+    if user["must_change_password"] and path not in PASSWORD_CHANGE_PATHS:
+        return JSONResponse({"detail": "Set a new password to continue.", "code": "password_change_required"},
+                            status_code=403)
+    if _admin_only(request.method, path) and user["role"] != "admin":
+        return JSONResponse({"detail": "Only the admin can do this.", "code": "admin_only"}, status_code=403)
+    request.state.user = user
     return await call_next(request)
 
 
@@ -81,6 +113,84 @@ def _err(exc: Exception, code: int = 400):
 def ping():
     return {"ok": True}
 
+# ----------------------------------------------------------------------------- login and users
+class LoginBody(BaseModel):
+    email: str
+    password: str
+
+
+class ChangePasswordBody(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class NewUserBody(BaseModel):
+    email: str
+    temp_password: str | None = None
+
+
+class ResetBody(BaseModel):
+    temp_password: str | None = None
+
+
+def _auth_call(fn, *args):
+    try:
+        return fn(*args)
+    except auth.AuthFailure as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+
+@app.post("/api/auth/login")
+def api_login(body: LoginBody):
+    with connect() as conn:
+        user, token = _auth_call(auth.login, conn, body.email, body.password)
+        return {"token": token, "user": auth.public_user(user)}
+
+
+@app.get("/api/auth/me")
+def api_me(request: Request):
+    return auth.public_user(request.state.user)
+
+
+@app.post("/api/auth/change-password")
+def api_change_password(body: ChangePasswordBody, request: Request):
+    with connect() as conn:
+        user, token = _auth_call(auth.change_password, conn, request.state.user, body.current_password, body.new_password)
+        return {"token": token, "user": auth.public_user(user)}
+
+
+@app.post("/api/auth/logout")
+def api_logout():
+    return {"ok": True}   # tokens are stateless; the browser drops its copy
+
+
+@app.get("/api/users")
+def api_users():
+    with connect() as conn:
+        rows = conn.execute("select * from app_users order by role, lower(email)").fetchall()
+    return [auth.public_user(u) for u in rows]
+
+
+@app.post("/api/users")
+def api_create_user(body: NewUserBody, request: Request):
+    with connect() as conn:
+        u = _auth_call(auth.create_user, conn, request.state.user, body.email, body.temp_password)
+        return auth.public_user(u)
+
+
+@app.post("/api/users/{user_id}/reset-password")
+def api_reset_password(user_id: int, body: ResetBody):
+    with connect() as conn:
+        return auth.public_user(_auth_call(auth.reset_password, conn, user_id, body.temp_password))
+
+
+@app.delete("/api/users/{user_id}")
+def api_delete_user(user_id: int, request: Request):
+    with connect() as conn:
+        u = _auth_call(auth.delete_user, conn, request.state.user, user_id)
+        return {"ok": True, "deleted": u["email"]}
+
+
 
 @app.get("/api/status")
 def status():
@@ -90,7 +200,7 @@ def status():
                       (select max(activity_date) from daily_activity) data_through,
                       (select min(activity_date) from daily_activity) data_from,
                       (select count(*) from uploads where status='complete') uploads""").fetchone()
-    return {**r, "api_version": API_VERSION, "auth_required": bool(os.environ.get("DASHBOARD_KEY")), "keep_columns": KEEP_COLUMNS}
+    return {**r, "api_version": API_VERSION, "keep_columns": KEEP_COLUMNS}
 
 
 def _customer_meta(conn) -> dict[int, dict]:
@@ -119,12 +229,21 @@ class RowChunk(BaseModel):
     rows: list[dict[str, Any]] = Field(default_factory=list)
 
 
+def _mark_uploader(up: dict, request: Request) -> None:
+    user = getattr(request.state, "user", None)
+    if user and up.get("upload_id"):
+        with connect() as conn:
+            conn.execute("update uploads set uploaded_by=%s where upload_id=%s", [user["email"], up["upload_id"]])
+
+
 @app.post("/api/uploads")
-def api_create_upload(body: NewUpload):
+def api_create_upload(body: NewUpload, request: Request):
     try:
-        return create_upload(body.filename, body.account_id, body.customer_name)
+        up = create_upload(body.filename, body.account_id, body.customer_name)
     except ValueError as exc:
         _err(exc, 404)
+    _mark_uploader(up, request)
+    return up
 
 
 @app.post("/api/uploads/{upload_id}/rows")
@@ -146,7 +265,8 @@ def api_complete(upload_id: int):
 
 
 @app.post("/api/uploads/csv")
-async def api_upload_csv(file: UploadFile = File(...), account_id: int | None = None, customer_name: str | None = None):
+async def api_upload_csv(request: Request, file: UploadFile = File(...), account_id: int | None = None,
+                         customer_name: str | None = None):
     """One-shot upload for scripts and files under the host's request limit."""
     text = (await file.read()).decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
@@ -156,6 +276,7 @@ async def api_upload_csv(file: UploadFile = File(...), account_id: int | None = 
         up = create_upload(file.filename, account_id, customer_name)
     except ValueError as exc:
         _err(exc, 404)
+    _mark_uploader(up, request)
     stats = {"received": 0, "inserted": 0, "duplicates": 0, "rejected": 0, "errors": []}
     for i in range(0, len(rows), 2000):
         s = add_rows(up["upload_id"], rows[i:i + 2000])
@@ -414,15 +535,125 @@ def export_daily(account_id: int | None = None):
                              headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
+def _latest_scores(conn) -> dict[int, dict]:
+    rows = conn.execute(
+        """select distinct on (h.account_id) h.account_id, a.name, h.as_of_date, h.score, h.status, h.confidence, h.components
+           from health_snapshots h join accounts a using (account_id)
+           order by h.account_id, h.as_of_date desc""").fetchall()
+    return {r["account_id"]: r for r in rows}
+
+
+def _impact(before: dict, after: dict) -> list[dict]:
+    out = []
+    for aid, a in after.items():
+        b = before.get(aid)
+        out.append({"account_id": aid, "name": a["name"],
+                    "score_before": float(b["score"]) if b else None, "status_before": b["status"] if b else None,
+                    "score_after": float(a["score"]), "status_after": a["status"], "confidence": a["confidence"],
+                    "components": a["components"]})
+    return sorted(out, key=lambda r: r["name"].lower())
+
+
+def _model_payload(conn) -> dict:
+    rec = C.load_model(conn)
+    run = conn.execute("select run_id, computed_at, data_through, params from calibration_runs order by run_id desc limit 1").fetchone()
+    versions = conn.execute(
+        "select version_id, changed_by, changed_at, note from scoring_model_versions order by version_id desc limit 10").fetchall()
+    return {
+        "model": C.current_model(), "defaults": C.DEFAULT_MODEL, "is_default": rec is None,
+        "updated_by": rec.get("updated_by") if rec else None, "updated_at": rec.get("updated_at") if rec else None,
+        "fields": {k: {"group": v[0], "label": v[1], "min": v[2], "max": v[3], "step": v[4], "unit": v[5], "help": v[6]}
+                   for k, v in C.EDITABLE.items()},
+        "fixed": {"current_window": C.CURRENT_WINDOW, "baseline_windows": C.BASELINE_WINDOWS,
+                  "adoption_window": C.ADOPTION_WINDOW, "min_peers": C.MIN_PEERS},
+        # kept for older clients
+        "weights": C.WEIGHTS, "healthy_at": C.HEALTHY_AT, "watch_at": C.WATCH_AT,
+        "auto_tx_per_minute": C.AUTO_TX_PER_MINUTE, "auto_sustained_per_minute": C.AUTO_SUSTAINED_PER_MINUTE,
+        "session_gap_minutes": C.SESSION_GAP_MINUTES, "current_window": C.CURRENT_WINDOW,
+        "baseline_windows": C.BASELINE_WINDOWS, "calibrating_days": C.CALIBRATING_DAYS, "calibrated_days": C.CALIBRATED_DAYS,
+        "latest_run": run, "versions": versions,
+    }
+
+
 @app.get("/api/model")
 def model():
     with connect() as conn:
-        run = conn.execute("select * from calibration_runs order by run_id desc limit 1").fetchone()
-    return {"weights": C.WEIGHTS, "healthy_at": C.HEALTHY_AT, "watch_at": C.WATCH_AT,
-            "auto_tx_per_minute": C.AUTO_TX_PER_MINUTE, "auto_sustained_per_minute": C.AUTO_SUSTAINED_PER_MINUTE,
-            "session_gap_minutes": C.SESSION_GAP_MINUTES, "current_window": C.CURRENT_WINDOW, "baseline_windows": C.BASELINE_WINDOWS,
-            "calibrating_days": C.CALIBRATING_DAYS, "calibrated_days": C.CALIBRATED_DAYS,
-            "latest_run": run}
+        return _model_payload(conn)
+
+
+class ModelBody(BaseModel):
+    model: dict[str, Any]
+    note: str | None = None
+
+
+def _needs_rollup(old: dict, new: dict) -> bool:
+    return any(abs(float(old[k]) - float(new[k])) > 1e-9 for k in C.CLASSIFICATION_KEYS)
+
+
+@app.post("/api/model/preview")
+def model_preview(body: ModelBody):
+    """Score every customer with a draft model inside a transaction that is rolled back."""
+    from .engine import _health, _rollup
+    try:
+        draft = C.validate_model(body.model)
+    except ValueError as exc:
+        _err(exc)
+    with connect() as conn:
+        C.load_model(conn)
+        saved = C.current_model()
+        before = _latest_scores(conn)
+        try:
+            C.apply_model(draft)
+            if _needs_rollup(saved, draft):
+                ids = [r["account_id"] for r in conn.execute("select account_id from accounts")]
+                if ids:
+                    _rollup(conn, ids)
+            _health(conn, "preview")
+            after = _latest_scores(conn)
+        finally:
+            conn.rollback()
+            C.apply_model(saved)
+    return {"model": draft, "customers": _impact(before, after)}
+
+
+def _save_model(conn, m: dict | None, user: dict, note: str | None) -> None:
+    from datetime import datetime, timezone
+    import json
+    if m is None:
+        conn.execute("delete from app_settings where key='scoring_model'")
+        snapshot = C.DEFAULT_MODEL
+    else:
+        rec = {"model": m, "updated_by": user["email"], "updated_at": datetime.now(timezone.utc).isoformat()}
+        conn.execute("""insert into app_settings (key, value) values ('scoring_model', %s)
+                        on conflict (key) do update set value = excluded.value""", [json.dumps(rec)])
+        snapshot = m
+    conn.execute("insert into scoring_model_versions (model, changed_by, note) values (%s, %s, %s)",
+                 [json.dumps(snapshot), user["email"], note or ("Reset to defaults" if m is None else None)])
+
+
+@app.put("/api/model")
+def model_save(body: ModelBody, request: Request):
+    """Save the model, then rescore every customer's full history and recalibrate."""
+    try:
+        m = C.validate_model(body.model)
+    except ValueError as exc:
+        _err(exc)
+    with connect() as conn:
+        before = _latest_scores(conn)
+        _save_model(conn, m, request.state.user, (body.note or "").strip()[:200] or None)
+    result = recompute(None, f"model change by {request.state.user['email']}")
+    with connect() as conn:
+        return {**_model_payload(conn), "result": result, "customers": _impact(before, _latest_scores(conn))}
+
+
+@app.post("/api/model/reset")
+def model_reset(request: Request):
+    with connect() as conn:
+        before = _latest_scores(conn)
+        _save_model(conn, None, request.state.user, None)
+    result = recompute(None, f"reset to defaults by {request.state.user['email']}")
+    with connect() as conn:
+        return {**_model_payload(conn), "result": result, "customers": _impact(before, _latest_scores(conn))}
 
 
 # ----------------------------------------------------------------------------- static (local dev only)

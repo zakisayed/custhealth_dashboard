@@ -1,6 +1,6 @@
 import { crumbs, refreshShell, state } from './app.js';
 import {
-  api, fmt, esc, badge, confBadge, delta, pctChange, sparkline, scoreColor, chart, css, fillDates, addDays,
+  currentUser, api, fmt, esc, badge, confBadge, delta, pctChange, sparkline, scoreColor, chart, css, fillDates, addDays,
   ICON, COMP_LABEL, objLabel, toast, download,
 } from './lib.js';
 import { thresholdBands } from './portfolio.js';
@@ -37,7 +37,7 @@ export async function renderAccount(view, id) {
       </div>
       <div class="head-meta">
         <button class="btn" id="dl-csv">${ICON.download}Daily summary CSV</button>
-        <button class="btn" id="settings">${ICON.gear}Settings</button>
+        ${currentUser?.role === 'admin' ? `<button class="btn" id="settings">${ICON.gear}Settings</button>` : ''}
       </div>
     </div>
     ${F.stale_days > 14 ? `<div class="alert info" style="margin-bottom:var(--space-4)">${ICON.info}<div>The latest data for ${esc(a.name)} is from ${fmt.date(F.data_through)}, ${F.stale_days} days ago. Scores reflect usage up to that date. <a href="#/c/${a.account_id}/upload">Upload a newer export</a> to refresh them.</div></div>` : ''}
@@ -240,7 +240,7 @@ export async function renderAccount(view, id) {
   document.getElementById('du-user').value = detailUser;
   document.getElementById('du-user').addEventListener('change', (e) => { detailUser = e.target.value; drawDaily(); });
   document.getElementById('dl-csv').addEventListener('click', () => download(`/api/export/daily.csv?account_id=${id}`, `daily_activity_${id}.csv`));
-  document.getElementById('settings').addEventListener('click', () => openSettings(a));
+  document.getElementById('settings')?.addEventListener('click', () => openSettings(a));
 }
 
 function rangeSeg(kind) {

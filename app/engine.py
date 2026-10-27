@@ -307,7 +307,7 @@ def _score_day(s: _AccountSeries, d: date, peers: dict, peer_ok: bool) -> dict:
     consistency = _clamp(100 * active_days / day_target)
     # auto-resolved alarms weigh half as much as open ones
     open_share = min(1.0, open_alarms / (crit + warn)) if (crit + warn) else 0
-    platform = _clamp(100 - (30 * crit + 10 * warn) * (0.5 + 0.5 * open_share))
+    platform = _clamp(100 - (C.ALARM_CRITICAL_PENALTY * crit + C.ALARM_WARNING_PENALTY * warn) * (0.5 + 0.5 * open_share))
 
     comps = {"engagement": engagement, "recency": recency, "breadth": breadth,
              "adoption": adoption, "consistency": consistency, "platform": platform}
@@ -369,7 +369,7 @@ def _score_day(s: _AccountSeries, d: date, peers: dict, peer_ok: bool) -> dict:
             "components": {k: round(v, 1) for k, v in comps.items()}, "reasons": reasons, "metrics": metrics}
 
 
-def _health(conn) -> dict:
+def _health(conn, trigger: str | None = None) -> dict:
     accts = conn.execute("select account_id, name, timezone, licensed_seats from accounts").fetchall()
     if not accts:
         return {"accounts": 0}
@@ -417,10 +417,10 @@ def _health(conn) -> dict:
                values (%s,%s,%s,%s,%s,%s,%s,%s)""", out_rows)
 
     params = {
-        "weights": C.WEIGHTS, "healthy_at": C.HEALTHY_AT, "watch_at": C.WATCH_AT,
+        "weights": C.WEIGHTS, "healthy_at": C.HEALTHY_AT, "watch_at": C.WATCH_AT, "model": C.current_model(),
         "auto_tx_per_minute": C.AUTO_TX_PER_MINUTE, "session_gap_minutes": C.SESSION_GAP_MINUTES,
         "current_window": C.CURRENT_WINDOW, "baseline_windows": C.BASELINE_WINDOWS,
-        "peers": peers, "accounts_scored": len(series),
+        "peers": peers, "accounts_scored": len(series), "trigger": trigger,
         "per_account": {
             str(aid): {
                 "first_activity": s.first.isoformat() if s.first else None,
@@ -435,11 +435,12 @@ def _health(conn) -> dict:
     return {"accounts": len(series), "data_through": through.isoformat(), "snapshots": len(out_rows), "peers": peers}
 
 
-def recompute(account_ids: list[int] | None = None) -> dict:
+def recompute(account_ids: list[int] | None = None, trigger: str | None = None) -> dict:
     with connect() as conn:
+        C.load_model(conn)   # always score with the admin's saved model
         if not account_ids:
             account_ids = [r["account_id"] for r in conn.execute("select account_id from accounts")]
         if account_ids:
             _rollup(conn, list(account_ids))
-        health = _health(conn)
+        health = _health(conn, trigger)
     return {"accounts_rolled_up": len(account_ids or []), **health}
