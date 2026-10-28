@@ -1,6 +1,7 @@
 """Upload lifecycle: create -> add row chunks -> complete (recompute everything)."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from .db import connect
@@ -141,3 +142,28 @@ def complete_upload(upload_id: int) -> dict:
                      [datetime.now(timezone.utc), upload_id])
         up = conn.execute("select * from uploads where upload_id=%s", [upload_id]).fetchone()
     return {"upload": up, "recompute": result}
+
+
+_EMAIL_OK = re.compile(r"[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}")
+
+
+def set_user_emails(upload_id: int, pairs: list[dict]) -> int:
+    """Store emails the browser matched from owner records. Match by user id, then by name."""
+    with connect() as conn:
+        up = conn.execute("select account_ids from uploads where upload_id=%s", [upload_id]).fetchone()
+        if not up or not up["account_ids"]:
+            return 0
+        n = 0
+        for p in pairs[:5000]:
+            em = str(p.get("email") or "").strip().lower()
+            if not _EMAIL_OK.fullmatch(em):
+                continue
+            uid = str(p.get("user_id") or "").strip().lstrip("'")
+            name = " ".join(str(p.get("user_name") or "").split()).lower()
+            cur = conn.execute(
+                """update account_users set email=%s
+                   where account_id = any(%s) and not is_system
+                     and (user_id=%s or (%s <> '' and lower(regexp_replace(trim(user_name), '\\s+', ' ', 'g'))=%s))""",
+                [em, up["account_ids"], uid, name, name])
+            n += cur.rowcount
+        return n

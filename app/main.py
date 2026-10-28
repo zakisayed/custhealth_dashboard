@@ -20,7 +20,7 @@ from . import auth
 from . import config as C
 from .db import connect, ensure_schema
 from .engine import recompute
-from .ingest import add_rows, complete_upload, create_upload
+from .ingest import add_rows, complete_upload, create_upload, set_user_emails
 from .normalize import ALL_OBJECT_COLUMNS, KEEP_COLUMNS
 
 class VercelPathFix:
@@ -231,6 +231,7 @@ class NewUpload(BaseModel):
 
 class RowChunk(BaseModel):
     rows: list[dict[str, Any]] = Field(default_factory=list)
+    user_emails: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _mark_uploader(up: dict, request: Request) -> None:
@@ -255,7 +256,10 @@ def api_add_rows(upload_id: int, body: RowChunk):
     if len(body.rows) > 5000:
         _err(ValueError("max 5000 rows per chunk"))
     try:
-        return add_rows(upload_id, body.rows)
+        out = add_rows(upload_id, body.rows)
+        if body.user_emails:
+            out["emails_set"] = set_user_emails(upload_id, body.user_emails)
+        return out
     except ValueError as exc:
         _err(exc)
 
