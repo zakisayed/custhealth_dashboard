@@ -26,33 +26,67 @@ function loose(text) {
   return t && typeof t === 'object' ? t : null;
 }
 
-// Owner and steward records pair a user id with an email, e.g. system_owner_id + system_owner_email.
-// Collect those pairs so each user in the Users table can show their email.
+// Owner, steward and similar records pair a user with an email, for example
+// system_owner_id + system_owner_name + system_owner_email. Collect every pair so each user
+// can be matched by id first, then by name.
+const normName = (n) => String(n || '').trim().replace(/\s+/g, ' ').toLowerCase();
+
 export function emailMap(data) {
-  const votes = new Map();
+  const byId = new Map(), byName = new Map();
+  const vote = (map, key, em) => {
+    if (!key) return;
+    const m = map.get(key) || new Map(); m.set(em, (m.get(em) || 0) + 1); map.set(key, m);
+  };
+  const add = (id, name, em) => {
+    em = String(em || '').trim().toLowerCase();
+    if (!EMAIL_RE.test(em)) return;
+    if (id !== undefined && id !== null && String(id).trim() !== '') vote(byId, String(id).trim().replace(/^'+/, ''), em);
+    vote(byName, normName(name), em);
+  };
   const walk = (o) => {
     if (Array.isArray(o)) { o.forEach(walk); return; }
     if (!o || typeof o !== 'object') return;
     for (const [k, v] of Object.entries(o)) {
-      if (/email$/i.test(k) && typeof v === 'string' && EMAIL_RE.test(v.trim())) {
+      if (/email$/i.test(k) && typeof v === 'string') {
         const pre = k.slice(0, -5);
-        const idKey = [pre + 'id', pre + 'user_id', 'user_id', 'id'].find((x) => o[x] !== undefined && o[x] !== null && o[x] !== '');
-        if (idKey) {
-          const id = String(o[idKey]).trim(), em = v.trim().toLowerCase();
-          const m = votes.get(id) || new Map(); m.set(em, (m.get(em) || 0) + 1); votes.set(id, m);
-        }
+        const pick = (keys) => keys.map((x) => o[x]).find((x) => x !== undefined && x !== null && x !== '');
+        add(pick([pre + 'id', pre + 'user_id', 'user_id', 'id']), pick([pre + 'name', pre + 'user_name', 'user_name', 'name']), v);
       } else if (v && typeof v === 'object') walk(v);
     }
   };
+  // Text fallback for payloads that do not parse as JSON: look inside the {...} around each email.
+  const EM_KEY = /"*([A-Za-z_]*?)email"*\s*:\s*"*([A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/g;
+  const scan = (t) => {
+    for (const m of t.matchAll(EM_KEY)) {
+      const lo = t.lastIndexOf('{', m.index), hi = t.indexOf('}', m.index);
+      const seg = t.slice(lo < 0 ? 0 : lo, hi < 0 ? undefined : hi);
+      const pre = m[1].replace(/[^A-Za-z_]/g, '');
+      const id = seg.match(new RegExp(`"*${pre}(?:user_)?id"*\\s*:\\s*"*'?(\\d+)`)) || seg.match(/"*user_id"*\s*:\s*"*'?(\d+)/);
+      const nm = seg.match(new RegExp(`"*${pre}(?:user_)?name"*\\s*:\\s*"+([^"]+)"`)) || seg.match(/"*user_name"*\s*:\s*"+([^"]+)"/);
+      add(id && id[1], nm && nm[1], m[2]);
+    }
+  };
   for (const r of data) {
-    for (const c of ['after_image', 'before_image']) {
+    for (const c of ['after_image', 'before_image', 'changed_fields', 'description']) {
       const s = r[c];
-      if (s && s.includes('@')) walk(loose(s));
+      if (!s || !s.includes('@')) continue;
+      const o = loose(s);
+      if (o) walk(o); else scan(s);
     }
   }
-  const out = new Map();
-  for (const [id, m] of votes) out.set(id, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]);
-  return out;
+  const top = (m) => [...m.entries()].sort((x, y) => y[1] - x[1])[0][0];
+  const ids = new Map([...byId].map(([k, m]) => [k, top(m)]));
+  const names = new Map([...byName].map(([k, m]) => [k, top(m)]));
+  return {
+    ids, names,
+    lookup(userId, userName) {
+      const id = String(userId || '').trim().replace(/^'+/, '');
+      if (ids.has(id)) return ids.get(id);
+      const n = normName(userName);
+      if (names.has(n)) return names.get(n);
+      return EMAIL_RE.test(String(userName || '').trim()) ? String(userName).trim().toLowerCase() : null;
+    },
+  };
 }
 
 const STEPS_HTML = `
@@ -182,10 +216,17 @@ async function start(file, target) {
     const missing = REQUIRED.filter((c) => !cols.includes(c));
     if (missing.length) { mark('check', 'err', `Missing columns: ${missing.join(', ')}`); stop(''); return; }
     const emails = emailMap(parsed.data);
+    const people = new Map();
+    for (const r of parsed.data) {
+      const id = String(r.user_id || '').trim().replace(/^'+/, '');
+      if (!id || id === '-1' || id === '0' || String(r.user_name || '').toUpperCase() === 'SYSTEM' || people.has(id)) continue;
+      people.set(id, { user_id: id, user_name: r.user_name || null, email: emails.lookup(r.user_id, r.user_name) });
+    }
+    const userEmails = [...people.values()];
     const rows = parsed.data.map((r) => {
       const o = {};
       for (const k of KEEP) if (r[k] !== undefined && r[k] !== '') o[k] = r[k];
-      const em = emails.get(String(r.user_id || '').trim().replace(/^'+/, ''));
+      const em = emails.lookup(r.user_id, r.user_name);
       if (em) o.user_email = em;
       const isAlarm = r.entity_type === 'ALM' || r.source_table === 'saws_alarms';
       if (!isAlarm) delete o.after_image;
@@ -234,7 +275,7 @@ async function start(file, target) {
       : { filename: file.name, customer_name: target.name || null } });
     const tot = { inserted: 0, duplicates: 0, rejected: 0, errors: [] };
     for (let i = 0; i < rows.length; i += CHUNK) {
-      const r = await api(`/api/uploads/${up.upload_id}/rows`, { json: { rows: rows.slice(i, i + CHUNK) } });
+      const r = await api(`/api/uploads/${up.upload_id}/rows`, { json: { rows: rows.slice(i, i + CHUNK), user_emails: i === 0 ? userEmails.filter((u) => u.email) : [] } });
       tot.inserted += r.inserted; tot.duplicates += r.duplicates; tot.rejected += r.rejected; tot.errors.push(...r.errors);
       bar.style.width = `${Math.min(85, ((i + CHUNK) / rows.length) * 85)}%`;
     }
@@ -251,6 +292,8 @@ async function start(file, target) {
         <div><b>${fmt.n(tot.rejected)}</b><span>Rejected</span></div>
         <div><b>${done.upload.min_ts ? `${fmt.short(done.upload.min_ts)} to ${fmt.short(done.upload.max_ts)}` : '–'}</b><span>Date range</span></div>
       </div>
+      <div class="small" style="margin-top:var(--space-4)"><b>Emails matched: ${userEmails.filter((u) => u.email).length} of ${userEmails.length} users</b>
+        ${userEmails.length ? `<div class="faint">${userEmails.map((u) => `${esc(u.user_name || u.user_id)}: ${u.email ? esc(u.email) : 'not found in this file'}`).join('<br>')}</div>` : ''}</div>
       ${tot.errors.length ? `<div class="alert err" style="margin-top:var(--space-4)">${ICON.at_risk}<div>${tot.errors.map(esc).join('<br>')}</div></div>` : ''}
       <div style="display:flex;gap:var(--space-2);margin-top:var(--space-5);flex-wrap:wrap">
         <a class="btn primary" href="#/c/${fileAcct}">Open ${esc(cust?.name || 'dashboard')}</a>
