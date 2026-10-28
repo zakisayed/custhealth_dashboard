@@ -59,8 +59,10 @@ KEEP_COLUMNS = [
     "PK", "SK", "account_id", "timestamp", "user_id", "user_name", "event_type", "event_type_name",
     "entity_type", "entity_type_name", "entity_sub_type", "entity_id", "entity_name", "entity_status",
     "source_table", "transaction_id", "node_alert_status", "description", "changed_fields", "after_image",
+    "user_email",
 ]
 
+_EMAIL = re.compile(r"[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}")
 _DQ_EXC = re.compile(r"Exception records:\s*([\d,]+)", re.I)
 _DQ_TOT = re.compile(r"Total records:\s*([\d,]+)", re.I)
 
@@ -135,6 +137,9 @@ def normalize_row(raw: dict) -> dict:
     user_id = str(raw["user_id"]).strip().strip("'\"")
     user_name = _s(raw.get("user_name"))
     is_system = user_id in ("-1", "0") or (user_name or "").upper() == "SYSTEM"
+    user_email = (_s(raw.get("user_email")) or "").lower()
+    if not _EMAIL.fullmatch(user_email):
+        user_email = user_name.lower() if user_name and _EMAIL.fullmatch(user_name.lower()) else None
 
     event_type = str(raw["event_type"]).strip().upper()
     action = ACTION_MAP.get(event_type) or ACTION_NAME_MAP.get((_s(raw.get("event_type_name")) or "").lower()) \
@@ -182,6 +187,7 @@ def normalize_row(raw: dict) -> dict:
         "ts": ts,
         "user_id": user_id,
         "user_name": "SYSTEM" if is_system and not user_name else user_name,
+        "user_email": None if is_system else user_email,
         "actor_type": "system" if is_system else "user",
         "event_type": event_type,
         "action": action,

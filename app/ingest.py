@@ -68,20 +68,23 @@ def add_rows(upload_id: int, rows: list[dict]) -> dict:
             for e in events:
                 k = (e["account_id"], e["user_id"])
                 u = users.setdefault(k, {"name": e["user_name"], "sys": e["actor_type"] == "system",
-                                         "first": e["ts"], "last": e["ts"]})
+                                         "first": e["ts"], "last": e["ts"], "email": None})
                 u["first"] = min(u["first"], e["ts"])
                 u["last"] = max(u["last"], e["ts"])
                 if e["user_name"]:
                     u["name"] = e["user_name"]
+                if e.get("user_email"):
+                    u["email"] = e["user_email"]
             with conn.cursor() as cur:
                 cur.executemany(
-                    """insert into account_users (account_id, user_id, user_name, is_system, first_seen, last_seen)
-                       values (%s,%s,%s,%s,%s,%s)
+                    """insert into account_users (account_id, user_id, user_name, is_system, first_seen, last_seen, email)
+                       values (%s,%s,%s,%s,%s,%s,%s)
                        on conflict (account_id, user_id) do update set
                          user_name = coalesce(excluded.user_name, account_users.user_name),
+                         email = coalesce(excluded.email, account_users.email),
                          first_seen = least(account_users.first_seen, excluded.first_seen),
                          last_seen  = greatest(account_users.last_seen, excluded.last_seen)""",
-                    [(a, uid, u["name"], u["sys"], u["first"], u["last"]) for (a, uid), u in users.items()],
+                    [(a, uid, u["name"], u["sys"], u["first"], u["last"], u["email"]) for (a, uid), u in users.items()],
                 )
                 cur.execute(
                     "create temp table stage_events (like events including defaults) on commit drop"

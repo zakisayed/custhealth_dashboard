@@ -275,6 +275,7 @@ function drawUsers(users, tz, th) {
     const vals = u.daily.map((x) => x.actions);
     return `<tr>
       <td><div class="acct-name">${esc(u.user_name || u.user_id)}</div><div class="small faint">ID ${esc(u.user_id)}</div></td>
+      <td>${u.email ? `<a href="mailto:${esc(u.email)}">${esc(u.email)}</a>` : u.actor_type === 'system' ? '' : '<span class="faint">Not found</span>'}</td>
       <td>${st === 'system' ? '<span class="badge info">System</span>' : st === 'active' ? '<span class="badge healthy">Active</span>' : '<span class="badge watch">Inactive 14d+</span>'}</td>
       <td class="nw">${fmt.time(u.last_activity, tz)}</td>
       <td class="n num">${u.active_days}</td>
@@ -284,7 +285,7 @@ function drawUsers(users, tz, th) {
       <td class="n num">${fmt.n(u.created)}</td><td class="n num">${fmt.n(u.updated)}</td><td class="n num">${fmt.n(u.deleted)}</td><td class="n num">${fmt.n(u.executed)}</td>
       <td>${u.actor_type === 'system' ? '' : sparkline(vals, { w: 80 })}</td></tr>`;
   }).join('');
-  document.getElementById('users').innerHTML = `<thead><tr><th>User</th><th>Status</th><th>Last activity</th><th class="n">Active days</th><th class="n">Actions</th><th class="n">Events</th><th class="n">Est. sessions</th><th class="n">Created</th><th class="n">Updated</th><th class="n">Deleted</th><th class="n">Executed</th><th>Actions/day</th></tr></thead><tbody>${rows}</tbody>`;
+  document.getElementById('users').innerHTML = `<thead><tr><th>User</th><th>Email</th><th>Status</th><th>Last activity</th><th class="n">Active days</th><th class="n">Actions</th><th class="n">Events</th><th class="n">Est. sessions</th><th class="n">Created</th><th class="n">Updated</th><th class="n">Deleted</th><th class="n">Executed</th><th>Actions/day</th></tr></thead><tbody>${rows}</tbody>`;
 }
 
 function alarmRows(rows, tz) {
