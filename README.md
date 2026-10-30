@@ -43,7 +43,7 @@ Each customer has its own dashboard. The sidebar lists every customer with its c
 
 ### File formats
 
-Uploads accept CSV and Excel (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`, `.ods`). Excel files are read in the browser with SheetJS (bundled in `public/vendor/`, loaded only when an Excel file is picked). The first sheet that has an `account_id` header is used, so cover or notes sheets are skipped. Long IDs and epoch-ms timestamps are kept exact, and real date cells are converted to ISO text. Excel limits a cell to 32,767 characters, so very long `after_image` values may be cut; emails already matched from earlier uploads are kept.
+Uploads accept CSV and Excel (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`, `.ods`). `.xlsx` and `.xlsm` files are read by a streaming reader in a background worker (`public/js/xlsx-worker.js`, using fflate), so very large exports work: a 101 MB workbook whose text expands to about 900 MB reads in under 30 seconds. Large JSON cells are reduced to the emails they contain while reading. Excel files are read in the browser with SheetJS (bundled in `public/vendor/`, loaded only when an Excel file is picked). The first sheet that has an `account_id` header is used, so cover or notes sheets are skipped. Long IDs and epoch-ms timestamps are kept exact, and real date cells are converted to ISO text. Excel limits a cell to 32,767 characters, so very long `after_image` values may be cut; emails already matched from earlier uploads are kept.
 
 ## Health model
 

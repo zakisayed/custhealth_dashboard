@@ -1,5 +1,6 @@
 import { crumbs, refreshShell, state } from './app.js';
 import { api, fmt, esc, ICON, toast } from './lib.js';
+import { emailMap, emailLookup } from './email.js';
 
 const REQUIRED = ['account_id', 'timestamp', 'event_type', 'entity_type', 'user_id'];
 const KEEP = [
@@ -8,87 +9,6 @@ const KEEP = [
   'source_table', 'transaction_id', 'node_alert_status', 'description', 'changed_fields', 'after_image',
 ];
 const CHUNK = 1500;
-const EMAIL_RE = /^[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
-
-// after_image / before_image arrive double-encoded with CSV-doubled quotes. Peel until it parses.
-function loose(text) {
-  let t = text;
-  for (let i = 0; i < 4; i++) {
-    if (t && typeof t === 'object') return t;
-    if (typeof t !== 'string') return null;
-    try { t = JSON.parse(t); continue; } catch { /* peel */ }
-    let t2 = t.trim();
-    if (t2.startsWith('"') && t2.endsWith('"')) t2 = t2.slice(1, -1);
-    t2 = t2.replaceAll('""', '"');
-    if (t2 === t) return null;
-    t = t2;
-  }
-  return t && typeof t === 'object' ? t : null;
-}
-
-// Owner, steward and similar records pair a user with an email, for example
-// system_owner_id + system_owner_name + system_owner_email. Collect every pair so each user
-// can be matched by id first, then by name.
-const normName = (n) => String(n || '').trim().replace(/\s+/g, ' ').toLowerCase();
-
-export function emailMap(data) {
-  const byId = new Map(), byName = new Map();
-  const vote = (map, key, em) => {
-    if (!key) return;
-    const m = map.get(key) || new Map(); m.set(em, (m.get(em) || 0) + 1); map.set(key, m);
-  };
-  const add = (id, name, em) => {
-    em = String(em || '').trim().toLowerCase();
-    if (!EMAIL_RE.test(em)) return;
-    if (id !== undefined && id !== null && String(id).trim() !== '') vote(byId, String(id).trim().replace(/^'+/, ''), em);
-    vote(byName, normName(name), em);
-  };
-  const walk = (o) => {
-    if (Array.isArray(o)) { o.forEach(walk); return; }
-    if (!o || typeof o !== 'object') return;
-    for (const [k, v] of Object.entries(o)) {
-      if (/email$/i.test(k) && typeof v === 'string') {
-        const pre = k.slice(0, -5);
-        const pick = (keys) => keys.map((x) => o[x]).find((x) => x !== undefined && x !== null && x !== '');
-        add(pick([pre + 'id', pre + 'user_id', 'user_id', 'id']), pick([pre + 'name', pre + 'user_name', 'user_name', 'name']), v);
-      } else if (v && typeof v === 'object') walk(v);
-    }
-  };
-  // Text fallback for payloads that do not parse as JSON: look inside the {...} around each email.
-  const EM_KEY = /"*([A-Za-z_]*?)email"*\s*:\s*"*([A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/g;
-  const scan = (t) => {
-    for (const m of t.matchAll(EM_KEY)) {
-      const lo = t.lastIndexOf('{', m.index), hi = t.indexOf('}', m.index);
-      const seg = t.slice(lo < 0 ? 0 : lo, hi < 0 ? undefined : hi);
-      const pre = m[1].replace(/[^A-Za-z_]/g, '');
-      const id = seg.match(new RegExp(`"*${pre}(?:user_)?id"*\\s*:\\s*"*'?(\\d+)`)) || seg.match(/"*user_id"*\s*:\s*"*'?(\d+)/);
-      const nm = seg.match(new RegExp(`"*${pre}(?:user_)?name"*\\s*:\\s*"+([^"]+)"`)) || seg.match(/"*user_name"*\s*:\s*"+([^"]+)"/);
-      add(id && id[1], nm && nm[1], m[2]);
-    }
-  };
-  for (const r of data) {
-    for (const c of ['after_image', 'before_image', 'changed_fields', 'description']) {
-      const s = r[c];
-      if (!s || !s.includes('@')) continue;
-      const o = loose(s);
-      if (o) walk(o); else scan(s);
-    }
-  }
-  const top = (m) => [...m.entries()].sort((x, y) => y[1] - x[1])[0][0];
-  const ids = new Map([...byId].map(([k, m]) => [k, top(m)]));
-  const names = new Map([...byName].map(([k, m]) => [k, top(m)]));
-  return {
-    ids, names,
-    lookup(userId, userName) {
-      const id = String(userId || '').trim().replace(/^'+/, '');
-      if (ids.has(id)) return ids.get(id);
-      const n = normName(userName);
-      if (names.has(n)) return names.get(n);
-      return EMAIL_RE.test(String(userName || '').trim()) ? String(userName).trim().toLowerCase() : null;
-    },
-  };
-}
-
 const STEPS_HTML = `
   <div class="card">
     <h2>What happens on upload</h2>
@@ -241,7 +161,34 @@ async function parseExcel(file) {
   return { data, meta: { fields: fields.filter(Boolean), sheet: best.name } };
 }
 
-function parse(file) {
+// Big .xlsx/.xlsm files are read by a streaming worker. A full in-memory read of a workbook whose
+// text expands past a few hundred MB fails silently in the browser, which used to show as
+// "The workbook has no rows".
+const STREAM_EXT = /\.(xlsx|xlsm)$/i;
+function parseExcelStream(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    let w;
+    try { w = new Worker(new URL('./xlsx-worker.js', import.meta.url), { type: 'module' }); } catch (e) { reject(e); return; }
+    w.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === 'progress') onProgress?.(m.pct);
+      else { w.terminate(); m.type === 'done' ? resolve(m) : reject(new Error(m.message)); }
+    };
+    w.onerror = (e) => { w.terminate(); reject(new Error(e.message || 'The Excel reader stopped unexpectedly.')); };
+    w.postMessage({ file });
+  });
+}
+
+async function parse(file, onProgress) {
+  if (STREAM_EXT.test(file.name || '')) {
+    try {
+      return await parseExcelStream(file, onProgress);
+    } catch (e) {
+      // Fall back to the full reader for small files only; large ones would fail there too.
+      if (file.size > 40 * 1024 * 1024) throw e;
+      console.warn('Streaming Excel reader failed, using the full reader', e);
+    }
+  }
   return EXCEL_EXT.test(file.name || '') ? parseExcel(file) : parseCsv(file);
 }
 
@@ -266,12 +213,14 @@ async function start(file, target) {
   };
   const bar = document.getElementById('bar');
   try {
-    const parsed = await parse(file);
+    const readLi = document.querySelector('#st-read span');
+    const readBase = readLi ? readLi.textContent : '';
+    const parsed = await parse(file, (pct) => { if (readLi) readLi.textContent = `${readBase} · ${pct}%`; });
     const cols = parsed.meta.fields || [];
     mark('read', 'done', `Read ${fmt.n(parsed.data.length)} rows${parsed.meta.sheet ? ` from sheet "${parsed.meta.sheet}"` : ''}`);
     const missing = REQUIRED.filter((c) => !cols.includes(c));
     if (missing.length) { mark('check', 'err', `Missing columns: ${missing.join(', ')}`); stop(''); return; }
-    const emails = emailMap(parsed.data);
+    const emails = emailMap(parsed.data, parsed.emailVotes);
     const people = new Map();
     for (const r of parsed.data) {
       const id = String(r.user_id || '').trim().replace(/^'+/, '');
