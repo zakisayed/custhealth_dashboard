@@ -95,7 +95,7 @@ function renderNav() {
   const cta = document.getElementById('upload-cta');
   if (cur) {
     cta.href = `#/c/${cur.account_id}/upload`;
-    cta.innerHTML = `${ICON.upload}<span>Upload CSV</span>`;
+    cta.innerHTML = `${ICON.upload}<span>Upload data</span>`;
     cta.hidden = r.page === 'upload';
   } else {
     cta.href = '#/new';
