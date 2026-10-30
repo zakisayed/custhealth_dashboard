@@ -13,8 +13,8 @@
     // On Vercel this stays unreplaced -> same-origin /api. In the sandbox preview it is rewritten to the proxy path.
     window.API_BASE = "__PORT_8000__".startsWith("__") ? "" : "__PORT_8000__";
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" defer></script>
+  <script src="vendor/chart.umd.min.js" defer></script>
+  <script src="vendor/papaparse.min.js" defer></script>
   <script type="module" src="js/app.js"></script>
 </head>
 <body class="signed-out">

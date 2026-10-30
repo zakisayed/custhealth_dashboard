@@ -180,9 +180,14 @@ export function chart(id, config) {
   const el = document.getElementById(id);
   if (!el || !window.Chart) return null;
   if (charts.has(id)) charts.get(id).destroy();
+  el.style.display = '';
+  el.parentElement?.querySelector('.chart-msg')?.remove();
   const c = new window.Chart(el, config);
   charts.set(id, c);
   return c;
+}
+export function destroyChart(id) {
+  if (charts.has(id)) { charts.get(id).destroy(); charts.delete(id); }
 }
 export function destroyCharts() {
   for (const c of charts.values()) c.destroy();

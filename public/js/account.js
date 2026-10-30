@@ -1,7 +1,7 @@
 import { crumbs, refreshShell, state } from './app.js';
 import {
   currentUser, api, fmt, esc, badge, confBadge, delta, pctChange, sparkline, scoreColor, chart, css, fillDates, addDays,
-  ICON, COMP_LABEL, objLabel, toast, download,
+  ICON, COMP_LABEL, objLabel, toast, download, destroyChart,
 } from './lib.js';
 import { thresholdBands } from './portfolio.js';
 
@@ -22,7 +22,9 @@ export async function renderAccount(view, id) {
   const F = d.freshness || {};
   currentThrough = L.as_of_date;
   const m = L.metrics, comp = L.components;
-  const hist = d.history.map((h) => ({ ...h, score: +h.score }));
+  const day = (v) => String(v ?? '').slice(0, 10);
+  const hist = (d.history || []).map((h) => ({ ...h, d: day(h.d), score: +h.score })).filter((h) => /^\d{4}-\d{2}-\d{2}$/.test(h.d));
+  const dailyDays = (d.daily || []).map((r) => ({ ...r, d: day(r.d) })).filter((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.d));
   const prev7 = hist.length > 7 ? hist[hist.length - 8].score : null;
   const scoreChg = prev7 === null ? null : +L.score - prev7;
   const types = m.object_types_30d || [];
@@ -145,11 +147,13 @@ export async function renderAccount(view, id) {
   }).join('');
   requestAnimationFrame(() => document.querySelectorAll('#comps i').forEach((i) => { i.style.width = i.dataset.w + '%'; }));
 
-  const through = L.as_of_date;
+  // Latest date with any data. Plain YYYY-MM-DD so date math works whatever the API sends.
+  const through = [day(L.as_of_date), hist.at(-1)?.d, dailyDays.at(-1)?.d].filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x)).sort().at(-1) || new Date().toISOString().slice(0, 10);
   const drawHist = () => {
     const first = hist[0]?.d || through;
     const from = range ? [addDays(through, -(range - 1)), first].sort()[1] : first;
-    const rows = hist.filter((h) => String(h.d) >= from);
+    const rows = hist.filter((h) => h.d >= from && h.d <= through);
+    if (!rows.length) return chartEmpty('ac-health', hist.length ? 'No scores in this range. Try All.' : 'No score history yet. Upload data to build it.');
     chart('ac-health', {
       type: 'line',
       data: { labels: rows.map((r) => r.d), datasets: [{
@@ -167,9 +171,11 @@ export async function renderAccount(view, id) {
   };
 
   const drawActivity = () => {
-    const first = String(d.daily[0]?.d || through).slice(0, 10);
+    const first = dailyDays[0]?.d || through;
     const from = range ? [addDays(through, -(range - 1)), first].sort()[1] : first;
-    const days = fillDates(d.daily.filter((r) => String(r.d) >= from), 'd', from, through);
+    const inRange = dailyDays.filter((r) => r.d >= from && r.d <= through);
+    if (!inRange.length) return chartEmpty('ac-activity', dailyDays.length ? 'No user activity in this range. Try All.' : 'No user activity yet. System events and alarms are not shown here.');
+    const days = fillDates(inRange, 'd', from, through);
     const pal = ['--c1', '--c2', '--c3', '--c4', '--c5', '--c6', '--c7', '--c8', '--text-faint'].map(css);
     let series;
     if (mode === 'action') series = ACTIONS.map((k, i) => ({ label: k[0].toUpperCase() + k.slice(1), key: k, color: pal[i] }));
@@ -220,22 +226,24 @@ export async function renderAccount(view, id) {
   <div class="legend" style="margin-top:var(--space-4)">${ACTIONS.map((ac, i) => `<span><i style="background:${apal[i]}"></i>${ac[0].toUpperCase() + ac.slice(1)}</span>`).join('')}<span class="faint">Bar length uses a square-root scale</span></div>`
     : '<div class="empty">No user activity</div>';
 
-  drawHeat(d.hours);
-  drawUsers(d.users, a.timezone, th);
-  const drawDaily = () => dailyTable(daily, a.timezone);
+  // Draw each section on its own so one failure cannot leave the others blank.
+  const safe = (name, target, fn) => { try { fn(); } catch (e) { console.error(`${name} failed`, e); sectionError(target, name, e); } };
+  const drawDaily = () => safe('Daily summary', 'daily', () => dailyTable(daily, a.timezone));
+  safe('Health score history', 'ac-health', drawHist);
+  safe('Daily activity', 'ac-activity', drawActivity);
+  safe('Usage heatmap', 'heat', () => drawHeat(d.hours));
+  safe('Users', 'users', () => drawUsers(d.users, a.timezone, th));
   drawDaily();
-  drawHist();
-  drawActivity();
 
   view.querySelectorAll('.seg[data-range]').forEach((seg) => seg.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
     range = +b.dataset.r;
     view.querySelectorAll('.seg[data-range] button').forEach((x) => x.classList.toggle('on', +x.dataset.r === range));
-    drawHist(); drawActivity();
+    safe('Health score history', 'ac-health', drawHist); safe('Daily activity', 'ac-activity', drawActivity);
   })));
   view.querySelectorAll('#mode-seg button').forEach((b) => b.addEventListener('click', () => {
     mode = b.dataset.m;
     view.querySelectorAll('#mode-seg button').forEach((x) => x.classList.toggle('on', x === b));
-    drawActivity();
+    safe('Daily activity', 'ac-activity', drawActivity);
   }));
   document.getElementById('du-user').value = detailUser;
   document.getElementById('du-user').addEventListener('change', (e) => { detailUser = e.target.value; drawDaily(); });
@@ -381,4 +389,24 @@ function skeleton() {
   return `<div class="skeleton" style="height:30px;width:280px;margin-bottom:var(--space-6)"></div>
     <div class="grid kpis">${k.repeat(6)}</div>
     <div class="grid cols-2"><div class="card"><div class="skeleton" style="height:290px"></div></div><div class="card"><div class="skeleton" style="height:290px"></div></div></div>`;
+}
+
+
+// Replace a chart with a short message, keeping the box height so the layout does not jump.
+function chartEmpty(id, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  destroyChart(id);
+  const box = el.parentElement;
+  box.querySelector('.chart-msg')?.remove();
+  el.style.display = 'none';
+  box.insertAdjacentHTML('beforeend', `<div class="chart-msg empty">${esc(msg)}</div>`);
+}
+
+function sectionError(id, name, e) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const msg = `${name} could not be drawn: ${e?.message || e}. Refresh the page; if it persists, send this message to support.`;
+  if (el.tagName === 'CANVAS') return chartEmpty(id, msg);
+  el.innerHTML = el.tagName === 'TABLE' ? `<tbody><tr><td class="empty">${esc(msg)}</td></tr></tbody>` : `<div class="empty">${esc(msg)}</div>`;
 }

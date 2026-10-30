@@ -475,6 +475,13 @@ def account(account_id: int):
         ud[r["user_id"]].append({"d": r["d"], "actions": r["actions"], "events": r["events"]})
     for u in users:
         u["daily"] = sorted(ud.get(u["user_id"], []), key=lambda x: x["d"])
+    # Always send plain YYYY-MM-DD for day fields so charts get the same shape on every database driver.
+    for r in history:
+        r["d"] = _day(r["d"])
+    for r in daily:
+        r["d"] = _day(r["d"])
+    if latest:
+        latest["as_of_date"] = _day(latest["as_of_date"])
     return {"account": a, "latest": latest, "history": history, "daily": daily, "matrix": matrix, "users": users,
             "hours": hours, "alarms": alarms, "dq_runs": dq, "top_objects": top_objects, "quality": quality,
             "freshness": _freshness(meta),
@@ -524,6 +531,12 @@ def _daily_rows(account_id: int | None):
         if account_id is None:
             return conn.execute(q + " order by account_id, activity_date, actor_type, user_id").fetchall()
         return conn.execute(q + " where account_id=%s order by activity_date, actor_type, user_id", [account_id]).fetchall()
+
+
+def _day(v):
+    if v is None:
+        return None
+    return v.isoformat()[:10] if hasattr(v, "isoformat") else str(v)[:10]
 
 
 @app.get("/api/accounts/{account_id}/daily")

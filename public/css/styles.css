@@ -213,6 +213,7 @@ td.nw, .nw { white-space: nowrap; }
 
 /* ---------- charts ---------- */
 .chart { position: relative; height: 260px; }
+.chart-msg { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: var(--space-4); color: var(--text-muted); }
 .chart.tall { height: 300px; }
 .chart.short { height: 200px; }
 .legend { display: flex; flex-wrap: wrap; gap: var(--space-3); font-size: var(--text-xs); color: var(--text-muted); }
