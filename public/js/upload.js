@@ -93,7 +93,7 @@ const STEPS_HTML = `
   <div class="card">
     <h2>What happens on upload</h2>
     <ul class="steps" style="margin-top:var(--space-4)">
-      <li class="done">${ICON.check}Parsed in your browser, large JSON columns dropped</li>
+      <li class="done">${ICON.check}CSV or Excel parsed in your browser, large JSON columns dropped</li>
       <li class="done">${ICON.check}Checked that every row belongs to this customer</li>
       <li class="done">${ICON.check}Deduplicated by log key, so overlapping exports are safe</li>
       <li class="done">${ICON.check}Mirrored DQ rows and machine-speed bursts flagged</li>
@@ -106,9 +106,9 @@ const STEPS_HTML = `
 function dropZone(sub) {
   return `<label class="drop" id="drop" tabindex="0">
       ${ICON.file}
-      <h2>Drop CSV here or browse</h2>
+      <h2>Drop a CSV or Excel file here, or browse</h2>
       <p>${sub}</p>
-      <input type="file" id="file" accept=".csv,text/csv" hidden />
+      <input type="file" id="file" accept="${ACCEPT}" hidden />
     </label>`;
 }
 
@@ -145,7 +145,7 @@ export async function renderUpload(view, accountId) {
   loadHistory(c.account_id);
 }
 
-// Add a new customer: name + first CSV.
+// Add a new customer: name + first CSV or Excel file.
 export async function renderNewCustomer(view) {
   crumbs('<a href="#/">Customers</a><span class="faint">/</span><b>Add customer</b>');
   const first = !(state.customers || []).length;
@@ -180,13 +180,69 @@ async function loadHistory(accountId) {
       <td class="small nw">${u.min_ts ? `${fmt.short(u.min_ts)} to ${fmt.short(u.max_ts)}` : '–'}</td></tr>`).join('')}</tbody>`;
 }
 
-function parse(file) {
+const EXCEL_EXT = /\.(xlsx|xlsm|xlsb|xls|ods)$/i;
+const ACCEPT = '.csv,text/csv,.xlsx,.xlsm,.xlsb,.xls,.ods,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel';
+
+function parseCsv(file) {
   return new Promise((resolve, reject) => {
     window.Papa.parse(file, {
       header: true, skipEmptyLines: true, worker: false,
       complete: (r) => resolve(r), error: reject,
     });
   });
+}
+
+let xlsxLoading;
+function loadXlsx() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  xlsxLoading ||= new Promise((resolve, reject) => {
+    const sc = document.createElement('script');
+    sc.src = 'vendor/xlsx.full.min.js';
+    sc.onload = () => resolve(window.XLSX);
+    sc.onerror = () => { xlsxLoading = null; reject(new Error('Could not load the Excel reader. Check your connection and try again.')); };
+    document.head.appendChild(sc);
+  });
+  return xlsxLoading;
+}
+
+// Excel cells come back typed. Turn them back into the same strings the CSV export has,
+// keeping long ids and epoch-ms timestamps exact and writing real date cells as ISO text.
+const pad = (n, w = 2) => String(n).padStart(w, '0');
+function cellText(v) {
+  if (v === null || v === undefined) return '';
+  if (v instanceof Date) {
+    if (isNaN(v)) return '';
+    return `${v.getFullYear()}-${pad(v.getMonth() + 1)}-${pad(v.getDate())}T${pad(v.getHours())}:${pad(v.getMinutes())}:${pad(v.getSeconds())}.${pad(v.getMilliseconds(), 3)}`;
+  }
+  if (typeof v === 'number') return Number.isInteger(v) ? v.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 0 }) : String(v);
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  return String(v);
+}
+
+async function parseExcel(file) {
+  const XLSX = await loadXlsx();
+  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true, dense: true });
+  // Use the first sheet that has the required columns, so a cover or notes sheet does not get in the way.
+  let best = null;
+  for (const name of wb.SheetNames) {
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null, blankrows: false });
+    const hi = aoa.findIndex((r, i) => i < 20 && r.some((c) => String(c ?? '').trim() === 'account_id'));
+    if (hi < 0) { if (!best) best = { name, aoa, hi: 0 }; continue; }
+    best = { name, aoa, hi }; break;
+  }
+  if (!best || !best.aoa.length) throw new Error('The workbook has no rows.');
+  const fields = best.aoa[best.hi].map((c) => String(c ?? '').trim());
+  const data = [];
+  for (const r of best.aoa.slice(best.hi + 1)) {
+    const o = {}; let any = false;
+    fields.forEach((f, i) => { if (!f) return; const t = cellText(r[i]); o[f] = t; if (t !== '') any = true; });
+    if (any) data.push(o);
+  }
+  return { data, meta: { fields: fields.filter(Boolean), sheet: best.name } };
+}
+
+function parse(file) {
+  return EXCEL_EXT.test(file.name || '') ? parseExcel(file) : parseCsv(file);
 }
 
 async function start(file, target) {
@@ -212,7 +268,7 @@ async function start(file, target) {
   try {
     const parsed = await parse(file);
     const cols = parsed.meta.fields || [];
-    mark('read', 'done', `Read ${fmt.n(parsed.data.length)} rows`);
+    mark('read', 'done', `Read ${fmt.n(parsed.data.length)} rows${parsed.meta.sheet ? ` from sheet "${parsed.meta.sheet}"` : ''}`);
     const missing = REQUIRED.filter((c) => !cols.includes(c));
     if (missing.length) { mark('check', 'err', `Missing columns: ${missing.join(', ')}`); stop(''); return; }
     const emails = emailMap(parsed.data);

@@ -212,7 +212,7 @@ def normalize_row(raw: dict) -> dict:
 def account_name_from_filename(filename: str | None, account_id: int) -> str:
     if not filename:
         return f"Account {account_id}"
-    base = re.sub(r"\.(csv|xlsx?|txt)$", "", filename.split("/")[-1], flags=re.I)
+    base = re.sub(r"\.(csv|xlsx|xlsm|xlsb|xls|ods|txt)$", "", filename.split("/")[-1], flags=re.I)
     base = re.sub(r"[_\-]+", " ", base)
     base = re.sub(r"\b(\d{4}[-_ ]?\d{2}[-_ ]?\d{2}|export|logs?|events?|activity)\b", "", base, flags=re.I)
     base = re.sub(r"\s+", " ", base).strip()

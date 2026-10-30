@@ -16,7 +16,7 @@ export async function renderAccount(view, id) {
   crumbs(`<a href="#/">Customers</a><span class="faint">/</span><b>${esc(a.name)}</b>`);
   if (!L) {
     view.innerHTML = `<div class="card empty"><h2>No scored activity yet</h2><p>Upload an activity export for ${esc(a.name)}.</p>
-      <a class="btn primary" href="#/c/${a.account_id}/upload">${ICON.upload}Upload CSV</a></div>`;
+      <a class="btn primary" href="#/c/${a.account_id}/upload">${ICON.upload}Upload data</a></div>`;
     return;
   }
   const F = d.freshness || {};

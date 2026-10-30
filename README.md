@@ -41,6 +41,10 @@ Each customer has its own dashboard. The sidebar lists every customer with its c
 5. User emails are read from the owner and steward records inside `after_image` and `before_image` (for example `system_owner_id`, `system_owner_name`, `system_owner_email`). Each user is matched by id first, then by name, and the upload result lists every match. Re-uploading a file refills emails for existing users. A user who never appears in such a record shows "Not found".
 6. Daily rollups are built in each account's time zone (set it in Account settings). Sessions are estimated using a 30-minute inactivity gap, since the export has no login events.
 
+### File formats
+
+Uploads accept CSV and Excel (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`, `.ods`). Excel files are read in the browser with SheetJS (bundled in `public/vendor/`, loaded only when an Excel file is picked). The first sheet that has an `account_id` header is used, so cover or notes sheets are skipped. Long IDs and epoch-ms timestamps are kept exact, and real date cells are converted to ISO text. Excel limits a cell to 32,767 characters, so very long `after_image` values may be cut; emails already matched from earlier uploads are kept.
+
 ## Health model
 
 | Component | Weight | Measure |
