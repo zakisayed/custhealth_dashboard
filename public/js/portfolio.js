@@ -125,8 +125,8 @@ function drawTable(p) {
       <td class="n"><b class="num">${fmt.n(m.actions_14d)}</b><div class="small">${m.actions_delta_14d == null ? '' : delta(m.actions_delta_14d)}</div></td>
       <td class="n num">${m.active_users_14d}<span class="faint"> / ${m.user_pool}</span></td>
       <td class="nw"><div>${fmt.short(m.last_activity_date)}</div><div class="small faint">${m.days_since_activity ? `${m.days_since_activity}d before data end` : 'last day of data'}</div></td>
-      <td class="nw"><div>${fmt.short(a.data_through)}</div><div class="small ${a.stale_days > 14 ? '' : 'faint'}" style="${a.stale_days > 14 ? 'color:var(--watch)' : ''}">${a.stale_days > 14 ? `${a.stale_days} days old` : `uploaded ${a.last_upload ? fmt.short(a.last_upload) : '–'}`}</div></td>
-      <td><span class="reason-chip" title="${esc(sig?.text || '')}">${esc(sig?.text || '–')}</span></td></tr>`;
+      <td class="nw"><div>${fmt.short(a.data_through)}</div><div class="small ${a.stale_days > 14 ? '' : 'faint'}" style="${a.stale_days > 14 ? 'color:var(--watch)' : ''}">${a.stale_days > 14 ? `${a.stale_days} days old` : `uploaded ${a.last_upload ? fmt.short(a.last_upload) : '-'}`}</div></td>
+      <td><span class="reason-chip" title="${esc(sig?.text || '')}">${esc(sig?.text || '-')}</span></td></tr>`;
   }).join('') || `<tr><td colspan="9" class="muted" style="text-align:center;padding:var(--space-8)">No customers in this group</td></tr>`}</tbody>`;
   tbl.querySelectorAll('th.sortable').forEach((h) => h.addEventListener('click', () => {
     if (sortKey === h.dataset.k) sortDir *= -1; else { sortKey = h.dataset.k; sortDir = 1; }

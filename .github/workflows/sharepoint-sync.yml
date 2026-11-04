@@ -1,0 +1,28 @@
+# Runs the SharePoint folder check every hour. The app decides which customers are due,
+# using the check interval set in the dashboard (Settings > SharePoint sync).
+# Needs two repository settings (Settings > Secrets and variables > Actions):
+#   secret   CRON_SECRET    same value as CRON_SECRET in Vercel
+#   variable DASHBOARD_URL  for example https://your-app.vercel.app
+name: SharePoint sync
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check customer folders
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
+        run: |
+          if [ -z "$CRON_SECRET" ] || [ -z "$DASHBOARD_URL" ]; then
+            echo "CRON_SECRET or DASHBOARD_URL is not set, skipping."; exit 0
+          fi
+          curl -sS --fail-with-body --max-time 330 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "${DASHBOARD_URL%/}/api/sync/run"

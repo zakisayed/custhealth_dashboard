@@ -1,4 +1,5 @@
 import { crumbs, refreshShell, state } from './app.js';
+import { openFolderEditor } from './sync.js';
 import {
   currentUser, api, fmt, esc, badge, confBadge, delta, pctChange, sparkline, scoreColor, chart, css, fillDates, addDays,
   ICON, COMP_LABEL, objLabel, toast, download, destroyChart,
@@ -289,7 +290,7 @@ function drawUsers(users, tz, th) {
       <td class="n num">${u.active_days}</td>
       <td class="n num">${fmt.n(u.actions)}</td>
       <td class="n num">${fmt.n(u.events)}${+u.automated ? `<div class="small faint">${fmt.n(u.automated)} automated</div>` : ''}</td>
-      <td class="n num">${u.sessions === null ? '–' : fmt.n(u.sessions)}</td>
+      <td class="n num">${u.sessions === null ? '-' : fmt.n(u.sessions)}</td>
       <td class="n num">${fmt.n(u.created)}</td><td class="n num">${fmt.n(u.updated)}</td><td class="n num">${fmt.n(u.deleted)}</td><td class="n num">${fmt.n(u.executed)}</td>
       <td>${u.actor_type === 'system' ? '' : sparkline(vals, { w: 80 })}</td></tr>`;
   }).join('');
@@ -299,14 +300,14 @@ function drawUsers(users, tz, th) {
 function alarmRows(rows, tz) {
   if (!rows.length) return '<tbody><tr><td class="muted">No alarms</td></tr></tbody>';
   const sev = (s) => s === 'critical' ? '<span class="badge at_risk">Critical</span>' : s === 'warning' ? '<span class="badge watch">Warning</span>' : `<span class="badge info">${esc(s || 'Info')}</span>`;
-  return `<thead><tr><th>Time</th><th>Alarm</th><th>Severity</th><th>Status</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${fmt.time(r.ts, tz)}</td><td>${esc(r.entity_name)}<div class="small faint">${esc(r.alarm_type || '')}</div></td><td>${sev(r.alarm_severity)}</td><td>${r.alarm_status === 'RSL' ? 'Resolved' : esc(r.alarm_status || '–')}</td></tr>`).join('')}</tbody>`;
+  return `<thead><tr><th>Time</th><th>Alarm</th><th>Severity</th><th>Status</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${fmt.time(r.ts, tz)}</td><td>${esc(r.entity_name)}<div class="small faint">${esc(r.alarm_type || '')}</div></td><td>${sev(r.alarm_severity)}</td><td>${r.alarm_status === 'RSL' ? 'Resolved' : esc(r.alarm_status || '-')}</td></tr>`).join('')}</tbody>`;
 }
 
 function dqRows(rows, tz) {
   if (!rows.length) return '<tbody><tr><td class="muted">No DQ rule runs</td></tr></tbody>';
   return `<thead><tr><th>Time</th><th>Rule</th><th>By</th><th class="n">Exceptions</th><th class="n">Rate</th></tr></thead><tbody>${rows.map((r) => {
     const rate = r.dq_total ? (r.dq_exceptions / r.dq_total) * 100 : null;
-    return `<tr><td>${fmt.time(r.ts, tz)}</td><td>${esc(r.entity_name)}${r.dq_alert ? ' <span class="badge watch">Alert</span>' : ''}</td><td>${esc(r.user_name || '')}</td><td class="n num">${fmt.n(r.dq_exceptions)} <span class="faint">/ ${fmt.n(r.dq_total)}</span></td><td class="n num">${rate === null ? '–' : fmt.n(rate, rate < 1 ? 2 : 0) + '%'}</td></tr>`;
+    return `<tr><td>${fmt.time(r.ts, tz)}</td><td>${esc(r.entity_name)}${r.dq_alert ? ' <span class="badge watch">Alert</span>' : ''}</td><td>${esc(r.user_name || '')}</td><td class="n num">${fmt.n(r.dq_exceptions)} <span class="faint">/ ${fmt.n(r.dq_total)}</span></td><td class="n num">${rate === null ? '-' : fmt.n(rate, rate < 1 ? 2 : 0) + '%'}</td></tr>`;
   }).join('')}</tbody>`;
 }
 
@@ -324,7 +325,7 @@ function dailyTable(rows, tz) {
       ${objCols.map(([k]) => `<td class="n">${+r[k] ? fmt.n(r[k]) : '<span class="faint">0</span>'}</td>`).join('')}
       <td class="n">${+r.alarms_total ? `${r.alarms_total}${+r.alarms_critical ? ' <span class="small" style="color:var(--risk)">crit</span>' : ''}` : '<span class="faint">0</span>'}</td>
       <td>${fmt.clock(r.first_activity, tz)}</td><td>${fmt.clock(r.last_activity, tz)}</td>
-      <td class="n">${r.est_sessions ?? '–'}</td>
+      <td class="n">${r.est_sessions ?? '-'}</td>
       <td>${+r.automated_events ? `<span class="tag" title="${r.automated_events} automated events">${fmt.compact(r.automated_events)} automated</span>` : ''}</td>
     </tr>`).join('')}</tbody>`;
 }
@@ -340,6 +341,9 @@ function openSettings(a) {
       <span class="hint">Sets day boundaries and work-hour heatmap. Changing it rebuilds this account's history.</span></div>
     <div class="field"><label for="s-seats">Licensed seats</label><input id="s-seats" type="number" min="0" value="${a.licensed_seats ?? ''}" placeholder="Not set" />
       <span class="hint">Optional. User breadth uses seats when set, otherwise users seen in 90 days.</span></div>
+    <div class="field"><label>SharePoint folder</label>
+      <div><button class="btn" id="s-sp" type="button">${ICON.sync}Set up automatic import</button></div>
+      <span class="hint">New files saved in the customer's SharePoint folder are imported on a schedule.</span></div>
     <div class="danger-zone">
       <h3 style="font-size:var(--text-sm);margin:0 0 var(--space-2)">Remove customer</h3>
       <p class="hint" style="margin:0 0 var(--space-3)">Deletes ${esc(a.name)} and all of its stored events, rollups and scores. Other customers are rescored. This cannot be undone.</p>
@@ -351,6 +355,7 @@ function openSettings(a) {
   bg.onclick = close;
   document.getElementById('dr-close').onclick = close;
   document.getElementById('dr-cancel').onclick = close;
+  document.getElementById('s-sp').onclick = () => openFolderEditor(a.account_id, () => toast('SharePoint folder saved'));
   document.getElementById('dr-remove').onclick = () => {
     const box = document.getElementById('rm-box');
     box.innerHTML = `<div class="field" style="margin:0"><label for="rm-confirm">Type the customer name to confirm</label>

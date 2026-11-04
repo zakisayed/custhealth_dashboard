@@ -199,3 +199,58 @@ create table if not exists scoring_model_versions (
 alter table app_users    enable row level security;
 alter table scoring_model_versions enable row level security;
 alter table app_settings enable row level security;
+
+-- SharePoint folder watch: one folder per customer, checked every N hours (app_settings 'sharepoint_sync').
+create table if not exists sharepoint_sources (
+  account_id       bigint primary key references accounts(account_id) on delete cascade,
+  folder_url       text not null,
+  drive_id         text,
+  item_id          text,
+  folder_name      text,
+  enabled          boolean not null default true,
+  include_existing boolean not null default true,
+  baseline_done    boolean not null default false,
+  created_by       text,
+  created_at       timestamptz not null default now(),
+  last_checked_at  timestamptz,
+  last_status      text,               -- ok | error | partial
+  last_message     text,
+  backlog          boolean not null default false
+);
+
+-- Every file seen in a watched folder. A new version of a file (new cTag) is processed again;
+-- rows already stored are skipped by the usual dedupe.
+create table if not exists sharepoint_files (
+  account_id    bigint not null references accounts(account_id) on delete cascade,
+  item_id       text not null,
+  name          text not null,
+  size          bigint,
+  modified_at   timestamptz,
+  ctag          text,
+  status        text not null,         -- pending | processing | complete | failed | skipped | baseline
+  upload_id     bigint references uploads(upload_id) on delete set null,
+  rows_new      integer,
+  rows_duplicate integer,
+  message       text,
+  attempts      integer not null default 0,
+  web_url       text,
+  first_seen_at timestamptz not null default now(),
+  started_at    timestamptz,
+  processed_at  timestamptz,
+  primary key (account_id, item_id)
+);
+
+create table if not exists sharepoint_runs (
+  run_id      bigserial primary key,
+  trigger     text,                    -- cron | manual
+  started_at  timestamptz not null default now(),
+  finished_at timestamptz,
+  checked     integer not null default 0,
+  imported    integer not null default 0,
+  failed      integer not null default 0,
+  message     text
+);
+
+alter table sharepoint_sources enable row level security;
+alter table sharepoint_files   enable row level security;
+alter table sharepoint_runs    enable row level security;

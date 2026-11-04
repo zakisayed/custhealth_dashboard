@@ -51,10 +51,10 @@ app = FastAPI(title="Customer Health Engine", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 _schema_ready = False
-API_VERSION = 3  # 3 = login and users; 2 = multi-customer (adds /api/customers, per-customer uploads)
+API_VERSION = 4  # 4 = SharePoint folder watch; 3 = login and users; 2 = multi-customer (adds /api/customers, per-customer uploads)
 
 
-PUBLIC_PATHS = {"/api/ping", "/api/auth/login"}
+PUBLIC_PATHS = {"/api/ping", "/api/auth/login", "/api/sync/run"}  # sync/run checks CRON_SECRET itself
 # reachable while the user still has to replace a temporary password
 PASSWORD_CHANGE_PATHS = {"/api/auth/me", "/api/auth/change-password", "/api/auth/logout"}
 
@@ -63,6 +63,8 @@ def _admin_only(method: str, path: str) -> bool:
     if path.startswith("/api/users"):
         return True
     if path.startswith("/api/model") and method != "GET":
+        return True
+    if "/sharepoint" in path and method != "GET":
         return True
     # removing a customer or editing its settings
     return method in ("DELETE", "PATCH") and path.startswith("/api/accounts/")
@@ -307,6 +309,156 @@ def api_uploads(account_id: int | None = None):
 @app.post("/api/recompute")
 def api_recompute():
     return recompute(None)
+
+
+# ----------------------------------------------------------------------------- SharePoint folder watch
+from . import sharepoint as SP  # noqa: E402
+from . import sync as SYNC  # noqa: E402
+
+
+def _cron_ok(request: Request) -> bool:
+    import hmac
+    secret = (os.environ.get("CRON_SECRET") or "").strip()
+    if not secret:
+        return False
+    header = request.headers.get("authorization", "")
+    given = header[7:].strip() if header.lower().startswith("bearer ") else ""
+    return hmac.compare_digest(given.encode(), secret.encode())
+
+
+@app.api_route("/api/sync/run", methods=["GET", "POST"])
+def api_sync_run(request: Request):
+    """Scheduler entry point (Vercel Cron or GitHub Actions). Needs Authorization: Bearer <CRON_SECRET>."""
+    if not (os.environ.get("CRON_SECRET") or "").strip():
+        raise HTTPException(status_code=503, detail="CRON_SECRET is not set in the environment.")
+    if not _cron_ok(request):
+        raise HTTPException(status_code=401, detail="Bad or missing CRON_SECRET.")
+    return SYNC.run_sync("cron")
+
+
+def _source_row(r: dict, interval: float) -> dict:
+    nxt = None
+    if r.get("enabled"):
+        nxt = (r["last_checked_at"] + timedelta(hours=interval)) if r.get("last_checked_at") and not r.get("backlog") else "next run"
+    return {**r, "next_check_at": nxt}
+
+
+@app.get("/api/sharepoint")
+def api_sharepoint():
+    with connect() as conn:
+        settings = SYNC.get_settings(conn)
+        rows = conn.execute(
+            """select s.*, a.name,
+                      (select count(*) from sharepoint_files f where f.account_id=s.account_id and f.status='complete') files_imported,
+                      (select count(*) from sharepoint_files f where f.account_id=s.account_id and f.status='failed') files_failed,
+                      (select count(*) from sharepoint_files f where f.account_id=s.account_id and f.status in ('pending','processing')) files_waiting
+               from sharepoint_sources s join accounts a using (account_id) order by lower(a.name)""").fetchall()
+        runs = conn.execute("select * from sharepoint_runs order by run_id desc limit 10").fetchall()
+    return {"credentials": SP.config_status(), "configured": SP.configured(),
+            "cron_secret_set": bool((os.environ.get("CRON_SECRET") or "").strip()),
+            "settings": settings, "limits": {"min": SYNC.MIN_INTERVAL, "max": SYNC.MAX_INTERVAL},
+            "sources": [_source_row(r, settings["interval_hours"]) for r in rows], "runs": runs}
+
+
+class SyncSettingsBody(BaseModel):
+    interval_hours: float
+
+
+@app.put("/api/sharepoint/settings")
+def api_sharepoint_settings(body: SyncSettingsBody, request: Request):
+    try:
+        with connect() as conn:
+            return SYNC.save_settings(conn, body.interval_hours, request.state.user["email"])
+    except ValueError as exc:
+        _err(exc)
+
+
+@app.post("/api/sharepoint/test")
+def api_sharepoint_test():
+    try:
+        SP.token()
+    except SP.GraphError as exc:
+        _err(exc)
+    return {"ok": True, "message": "Signed in to Microsoft Graph."}
+
+
+@app.post("/api/sharepoint/run")
+def api_sharepoint_run():
+    return SYNC.run_sync("manual", force=True)
+
+
+@app.get("/api/accounts/{account_id}/sharepoint")
+def api_account_sharepoint(account_id: int):
+    with connect() as conn:
+        settings = SYNC.get_settings(conn)
+        src = conn.execute("select * from sharepoint_sources where account_id=%s", [account_id]).fetchone()
+        files = conn.execute(
+            """select item_id, name, size, modified_at, status, message, upload_id, rows_new, rows_duplicate, attempts,
+                      web_url, first_seen_at, processed_at
+               from sharepoint_files where account_id=%s order by coalesce(processed_at, first_seen_at) desc limit 100""",
+            [account_id]).fetchall()
+    return {"configured": SP.configured(), "settings": settings,
+            "source": _source_row(src, settings["interval_hours"]) if src else None, "files": files}
+
+
+class SourceBody(BaseModel):
+    folder_url: str
+    enabled: bool = True
+    include_existing: bool = True
+
+
+@app.put("/api/accounts/{account_id}/sharepoint")
+def api_account_sharepoint_save(account_id: int, body: SourceBody, request: Request):
+    url = body.folder_url.strip()
+    with connect() as conn:
+        if not conn.execute("select 1 from accounts where account_id=%s", [account_id]).fetchone():
+            _err(ValueError("customer not found"), 404)
+        old = conn.execute("select * from sharepoint_sources where account_id=%s", [account_id]).fetchone()
+    try:
+        it = SP.resolve(url)
+        files = SP.list_files(it["drive_id"], it["item_id"])
+    except SP.GraphError as exc:
+        _err(exc)
+    same = bool(old) and old["folder_url"] == url
+    with connect() as conn:
+        if old and not same:
+            conn.execute("delete from sharepoint_files where account_id=%s and status in ('baseline','skipped','pending')",
+                         [account_id])
+        conn.execute(
+            """insert into sharepoint_sources (account_id, folder_url, drive_id, item_id, folder_name, enabled,
+                                                 include_existing, baseline_done, created_by)
+               values (%s,%s,%s,%s,%s,%s,%s,false,%s)
+               on conflict (account_id) do update set folder_url=excluded.folder_url, drive_id=excluded.drive_id,
+                 item_id=excluded.item_id, folder_name=excluded.folder_name, enabled=excluded.enabled,
+                 include_existing=excluded.include_existing,
+                 baseline_done = case when sharepoint_sources.folder_url = excluded.folder_url
+                                      then sharepoint_sources.baseline_done else false end,
+                 last_checked_at = case when sharepoint_sources.folder_url = excluded.folder_url
+                                        then sharepoint_sources.last_checked_at else null end""",
+            [account_id, url, it["drive_id"], it["item_id"], it["name"], body.enabled, body.include_existing,
+             request.state.user["email"]])
+    ok = [f for f in files if SYNC.supported(f["name"])]
+    return {"ok": True, "folder_name": it["name"], "web_url": it["web_url"], "files": len(files),
+            "supported_files": len(ok), "sample": [f["name"] for f in ok[:5]]}
+
+
+@app.delete("/api/accounts/{account_id}/sharepoint")
+def api_account_sharepoint_delete(account_id: int):
+    with connect() as conn:
+        conn.execute("delete from sharepoint_files where account_id=%s and status <> 'complete'", [account_id])
+        conn.execute("delete from sharepoint_sources where account_id=%s", [account_id])
+    return {"ok": True}
+
+
+@app.post("/api/accounts/{account_id}/sharepoint/check")
+def api_account_sharepoint_check(account_id: int):
+    with connect() as conn:
+        src = conn.execute("select enabled from sharepoint_sources where account_id=%s", [account_id]).fetchone()
+    if not src:
+        _err(ValueError("No SharePoint folder is set for this customer."))
+    if not src["enabled"]:
+        _err(ValueError("Watching is turned off for this customer. Turn it on in Settings first."))
+    return SYNC.run_sync("manual", account_id=account_id, force=True)
 
 
 # ----------------------------------------------------------------------------- portfolio

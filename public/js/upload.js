@@ -1,6 +1,7 @@
 import { crumbs, refreshShell, state } from './app.js';
 import { api, fmt, esc, ICON, toast } from './lib.js';
 import { emailMap, emailLookup } from './email.js';
+import { renderFolderCard } from './sync.js';
 
 const REQUIRED = ['account_id', 'timestamp', 'event_type', 'entity_type', 'user_id'];
 const KEEP = [
@@ -57,12 +58,16 @@ export async function renderUpload(view, accountId) {
       </div>
       ${STEPS_HTML}
     </div>
+    <div class="card section" id="sp-card"></div>
     <div class="card section">
       <div class="card-head"><div><h2>Upload history</h2><div class="sub">Files uploaded for ${esc(c.name)}</div></div></div>
       <div class="table-wrap"><table id="hist"></table></div>
     </div>`;
   wireDrop((f) => start(f, { accountId: c.account_id, name: c.name }));
   loadHistory(c.account_id);
+  const sp = document.getElementById('sp-card');
+  renderFolderCard(sp, c.account_id);
+  sp.addEventListener('sp-imported', () => loadHistory(c.account_id));
 }
 
 // Add a new customer: name + first CSV or Excel file.
@@ -94,10 +99,10 @@ async function loadHistory(accountId) {
   if (!rows.length) { el.innerHTML = '<tbody><tr><td class="muted">No uploads yet</td></tr></tbody>'; return; }
   const st = { complete: 'healthy', failed: 'at_risk', processing: 'watch', receiving: 'watch' };
   el.innerHTML = `<thead><tr><th>When</th><th>File</th><th>By</th><th>Status</th><th class="n">Rows</th><th class="n">New</th><th class="n">Already stored</th><th class="n">Rejected</th><th>Covers</th></tr></thead>
-    <tbody>${rows.map((u) => `<tr><td class="nw">${fmt.time(u.created_at)}</td><td>${esc(u.filename || '–')}</td><td class="nw small">${esc(u.uploaded_by || '')}</td>
+    <tbody>${rows.map((u) => `<tr><td class="nw">${fmt.time(u.created_at)}</td><td>${esc(u.filename || '-')}</td><td class="nw small">${esc(u.uploaded_by || '')}</td>
       <td><span class="badge ${st[u.status] || 'info'}">${esc(u.status)}</span></td>
       <td class="n num">${fmt.n(u.rows_received)}</td><td class="n num">${fmt.n(u.rows_inserted)}</td><td class="n num">${fmt.n(u.rows_duplicate)}</td><td class="n num">${fmt.n(u.rows_rejected)}</td>
-      <td class="small nw">${u.min_ts ? `${fmt.short(u.min_ts)} to ${fmt.short(u.max_ts)}` : '–'}</td></tr>`).join('')}</tbody>`;
+      <td class="small nw">${u.min_ts ? `${fmt.short(u.min_ts)} to ${fmt.short(u.max_ts)}` : '-'}</td></tr>`).join('')}</tbody>`;
 }
 
 const EXCEL_EXT = /\.(xlsx|xlsm|xlsb|xls|ods)$/i;
@@ -295,7 +300,7 @@ async function start(file, target) {
         <div><b>${fmt.n(tot.inserted)}</b><span>New events</span></div>
         <div><b>${fmt.n(tot.duplicates)}</b><span>Already stored</span></div>
         <div><b>${fmt.n(tot.rejected)}</b><span>Rejected</span></div>
-        <div><b>${done.upload.min_ts ? `${fmt.short(done.upload.min_ts)} to ${fmt.short(done.upload.max_ts)}` : '–'}</b><span>Date range</span></div>
+        <div><b>${done.upload.min_ts ? `${fmt.short(done.upload.min_ts)} to ${fmt.short(done.upload.max_ts)}` : '-'}</b><span>Date range</span></div>
       </div>
       <div class="small" style="margin-top:var(--space-4)"><b>Emails matched: ${userEmails.filter((u) => u.email).length} of ${userEmails.length} users</b>
         ${userEmails.length ? `<div class="faint">${userEmails.map((u) => `${esc(u.user_name || u.user_id)}: ${u.email ? esc(u.email) : 'not found in this file'}`).join('<br>')}</div>` : ''}</div>
