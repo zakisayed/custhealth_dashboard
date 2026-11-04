@@ -1,4 +1,4 @@
-/* Customer Health Console — light, data-dense, slate + deep teal */
+/* Customer Health Console: light, data-dense, slate + deep teal */
 :root {
   --text-xs: clamp(0.75rem, 0.7rem + 0.25vw, 0.8125rem);
   --text-sm: clamp(0.8125rem, 0.78rem + 0.2vw, 0.9375rem);
@@ -213,6 +213,7 @@ td.nw, .nw { white-space: nowrap; }
 
 /* ---------- charts ---------- */
 .chart { position: relative; height: 260px; }
+.chart-msg { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: var(--space-4); color: var(--text-muted); }
 .chart.tall { height: 300px; }
 .chart.short { height: 200px; }
 .legend { display: flex; flex-wrap: wrap; gap: var(--space-3); font-size: var(--text-xs); color: var(--text-muted); }
@@ -289,6 +290,19 @@ code, .mono { font-family: var(--mono); font-size: 0.85em; background: var(--sur
   background: var(--text); color: #fff; padding: var(--space-3) var(--space-5); border-radius: var(--radius); font-size: var(--text-sm);
   transition: all 250ms var(--ease); z-index: 60; pointer-events: none; }
 .toast.show { opacity: 1; transform: translateX(-50%); }
+.toast { white-space: pre-line; max-width: min(640px, calc(100vw - 32px)); }
+
+/* ---------- SharePoint sync ---------- */
+.check-row { display: flex; gap: var(--space-2); align-items: center; margin: var(--space-3) 0; font-size: var(--text-sm); cursor: pointer; }
+.check-row input { width: 16px; height: 16px; accent-color: var(--accent, var(--primary)); }
+.sync-int { display: flex; gap: var(--space-3); align-items: flex-end; flex-wrap: wrap; }
+.sync-int .field { flex: 1 1 220px; }
+.sync-int input { max-width: 140px; }
+.add-folder { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+.add-folder select { min-width: 180px; }
+.sp-folder { max-width: 280px; overflow-wrap: break-word; }
+.sp-msg { max-width: 360px; overflow-wrap: anywhere; }
+
 
 /* ---------- responsive ---------- */
 @media (max-width: 1100px) {
@@ -342,6 +356,7 @@ body.signed-out .shell { display: none; }
 .add-user .btn { height: 38px; }
 .users-tbl td .btn + .btn { margin-left: var(--space-2); }
 section.card + section.card { margin-top: var(--space-4); }
+.grid > section.card + section.card { margin-top: 0; }
 #nu-err { margin-top: var(--space-3); }
 @media (max-width: 640px) { .add-user { grid-template-columns: 1fr; } }
 .modal-bg { position: fixed; inset: 0; background: rgba(23, 32, 29, 0.38); display: grid; place-items: center; padding: var(--space-4); z-index: 60; }

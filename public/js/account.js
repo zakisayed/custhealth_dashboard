@@ -1,7 +1,8 @@
 import { crumbs, refreshShell, state } from './app.js';
+import { openFolderEditor } from './sync.js';
 import {
   currentUser, api, fmt, esc, badge, confBadge, delta, pctChange, sparkline, scoreColor, chart, css, fillDates, addDays,
-  ICON, COMP_LABEL, objLabel, toast, download,
+  ICON, COMP_LABEL, objLabel, toast, download, destroyChart,
 } from './lib.js';
 import { thresholdBands } from './portfolio.js';
 
@@ -22,7 +23,9 @@ export async function renderAccount(view, id) {
   const F = d.freshness || {};
   currentThrough = L.as_of_date;
   const m = L.metrics, comp = L.components;
-  const hist = d.history.map((h) => ({ ...h, score: +h.score }));
+  const day = (v) => String(v ?? '').slice(0, 10);
+  const hist = (d.history || []).map((h) => ({ ...h, d: day(h.d), score: +h.score })).filter((h) => /^\d{4}-\d{2}-\d{2}$/.test(h.d));
+  const dailyDays = (d.daily || []).map((r) => ({ ...r, d: day(r.d) })).filter((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.d));
   const prev7 = hist.length > 7 ? hist[hist.length - 8].score : null;
   const scoreChg = prev7 === null ? null : +L.score - prev7;
   const types = m.object_types_30d || [];
@@ -145,11 +148,13 @@ export async function renderAccount(view, id) {
   }).join('');
   requestAnimationFrame(() => document.querySelectorAll('#comps i').forEach((i) => { i.style.width = i.dataset.w + '%'; }));
 
-  const through = L.as_of_date;
+  // Latest date with any data. Plain YYYY-MM-DD so date math works whatever the API sends.
+  const through = [day(L.as_of_date), hist.at(-1)?.d, dailyDays.at(-1)?.d].filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x)).sort().at(-1) || new Date().toISOString().slice(0, 10);
   const drawHist = () => {
     const first = hist[0]?.d || through;
     const from = range ? [addDays(through, -(range - 1)), first].sort()[1] : first;
-    const rows = hist.filter((h) => String(h.d) >= from);
+    const rows = hist.filter((h) => h.d >= from && h.d <= through);
+    if (!rows.length) return chartEmpty('ac-health', hist.length ? 'No scores in this range. Try All.' : 'No score history yet. Upload data to build it.');
     chart('ac-health', {
       type: 'line',
       data: { labels: rows.map((r) => r.d), datasets: [{
@@ -167,9 +172,11 @@ export async function renderAccount(view, id) {
   };
 
   const drawActivity = () => {
-    const first = String(d.daily[0]?.d || through).slice(0, 10);
+    const first = dailyDays[0]?.d || through;
     const from = range ? [addDays(through, -(range - 1)), first].sort()[1] : first;
-    const days = fillDates(d.daily.filter((r) => String(r.d) >= from), 'd', from, through);
+    const inRange = dailyDays.filter((r) => r.d >= from && r.d <= through);
+    if (!inRange.length) return chartEmpty('ac-activity', dailyDays.length ? 'No user activity in this range. Try All.' : 'No user activity yet. System events and alarms are not shown here.');
+    const days = fillDates(inRange, 'd', from, through);
     const pal = ['--c1', '--c2', '--c3', '--c4', '--c5', '--c6', '--c7', '--c8', '--text-faint'].map(css);
     let series;
     if (mode === 'action') series = ACTIONS.map((k, i) => ({ label: k[0].toUpperCase() + k.slice(1), key: k, color: pal[i] }));
@@ -220,22 +227,24 @@ export async function renderAccount(view, id) {
   <div class="legend" style="margin-top:var(--space-4)">${ACTIONS.map((ac, i) => `<span><i style="background:${apal[i]}"></i>${ac[0].toUpperCase() + ac.slice(1)}</span>`).join('')}<span class="faint">Bar length uses a square-root scale</span></div>`
     : '<div class="empty">No user activity</div>';
 
-  drawHeat(d.hours);
-  drawUsers(d.users, a.timezone, th);
-  const drawDaily = () => dailyTable(daily, a.timezone);
+  // Draw each section on its own so one failure cannot leave the others blank.
+  const safe = (name, target, fn) => { try { fn(); } catch (e) { console.error(`${name} failed`, e); sectionError(target, name, e); } };
+  const drawDaily = () => safe('Daily summary', 'daily', () => dailyTable(daily, a.timezone));
+  safe('Health score history', 'ac-health', drawHist);
+  safe('Daily activity', 'ac-activity', drawActivity);
+  safe('Usage heatmap', 'heat', () => drawHeat(d.hours));
+  safe('Users', 'users', () => drawUsers(d.users, a.timezone, th));
   drawDaily();
-  drawHist();
-  drawActivity();
 
   view.querySelectorAll('.seg[data-range]').forEach((seg) => seg.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
     range = +b.dataset.r;
     view.querySelectorAll('.seg[data-range] button').forEach((x) => x.classList.toggle('on', +x.dataset.r === range));
-    drawHist(); drawActivity();
+    safe('Health score history', 'ac-health', drawHist); safe('Daily activity', 'ac-activity', drawActivity);
   })));
   view.querySelectorAll('#mode-seg button').forEach((b) => b.addEventListener('click', () => {
     mode = b.dataset.m;
     view.querySelectorAll('#mode-seg button').forEach((x) => x.classList.toggle('on', x === b));
-    drawActivity();
+    safe('Daily activity', 'ac-activity', drawActivity);
   }));
   document.getElementById('du-user').value = detailUser;
   document.getElementById('du-user').addEventListener('change', (e) => { detailUser = e.target.value; drawDaily(); });
@@ -281,7 +290,7 @@ function drawUsers(users, tz, th) {
       <td class="n num">${u.active_days}</td>
       <td class="n num">${fmt.n(u.actions)}</td>
       <td class="n num">${fmt.n(u.events)}${+u.automated ? `<div class="small faint">${fmt.n(u.automated)} automated</div>` : ''}</td>
-      <td class="n num">${u.sessions === null ? '–' : fmt.n(u.sessions)}</td>
+      <td class="n num">${u.sessions === null ? '-' : fmt.n(u.sessions)}</td>
       <td class="n num">${fmt.n(u.created)}</td><td class="n num">${fmt.n(u.updated)}</td><td class="n num">${fmt.n(u.deleted)}</td><td class="n num">${fmt.n(u.executed)}</td>
       <td>${u.actor_type === 'system' ? '' : sparkline(vals, { w: 80 })}</td></tr>`;
   }).join('');
@@ -291,14 +300,14 @@ function drawUsers(users, tz, th) {
 function alarmRows(rows, tz) {
   if (!rows.length) return '<tbody><tr><td class="muted">No alarms</td></tr></tbody>';
   const sev = (s) => s === 'critical' ? '<span class="badge at_risk">Critical</span>' : s === 'warning' ? '<span class="badge watch">Warning</span>' : `<span class="badge info">${esc(s || 'Info')}</span>`;
-  return `<thead><tr><th>Time</th><th>Alarm</th><th>Severity</th><th>Status</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${fmt.time(r.ts, tz)}</td><td>${esc(r.entity_name)}<div class="small faint">${esc(r.alarm_type || '')}</div></td><td>${sev(r.alarm_severity)}</td><td>${r.alarm_status === 'RSL' ? 'Resolved' : esc(r.alarm_status || '–')}</td></tr>`).join('')}</tbody>`;
+  return `<thead><tr><th>Time</th><th>Alarm</th><th>Severity</th><th>Status</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${fmt.time(r.ts, tz)}</td><td>${esc(r.entity_name)}<div class="small faint">${esc(r.alarm_type || '')}</div></td><td>${sev(r.alarm_severity)}</td><td>${r.alarm_status === 'RSL' ? 'Resolved' : esc(r.alarm_status || '-')}</td></tr>`).join('')}</tbody>`;
 }
 
 function dqRows(rows, tz) {
   if (!rows.length) return '<tbody><tr><td class="muted">No DQ rule runs</td></tr></tbody>';
   return `<thead><tr><th>Time</th><th>Rule</th><th>By</th><th class="n">Exceptions</th><th class="n">Rate</th></tr></thead><tbody>${rows.map((r) => {
     const rate = r.dq_total ? (r.dq_exceptions / r.dq_total) * 100 : null;
-    return `<tr><td>${fmt.time(r.ts, tz)}</td><td>${esc(r.entity_name)}${r.dq_alert ? ' <span class="badge watch">Alert</span>' : ''}</td><td>${esc(r.user_name || '')}</td><td class="n num">${fmt.n(r.dq_exceptions)} <span class="faint">/ ${fmt.n(r.dq_total)}</span></td><td class="n num">${rate === null ? '–' : fmt.n(rate, rate < 1 ? 2 : 0) + '%'}</td></tr>`;
+    return `<tr><td>${fmt.time(r.ts, tz)}</td><td>${esc(r.entity_name)}${r.dq_alert ? ' <span class="badge watch">Alert</span>' : ''}</td><td>${esc(r.user_name || '')}</td><td class="n num">${fmt.n(r.dq_exceptions)} <span class="faint">/ ${fmt.n(r.dq_total)}</span></td><td class="n num">${rate === null ? '-' : fmt.n(rate, rate < 1 ? 2 : 0) + '%'}</td></tr>`;
   }).join('')}</tbody>`;
 }
 
@@ -316,7 +325,7 @@ function dailyTable(rows, tz) {
       ${objCols.map(([k]) => `<td class="n">${+r[k] ? fmt.n(r[k]) : '<span class="faint">0</span>'}</td>`).join('')}
       <td class="n">${+r.alarms_total ? `${r.alarms_total}${+r.alarms_critical ? ' <span class="small" style="color:var(--risk)">crit</span>' : ''}` : '<span class="faint">0</span>'}</td>
       <td>${fmt.clock(r.first_activity, tz)}</td><td>${fmt.clock(r.last_activity, tz)}</td>
-      <td class="n">${r.est_sessions ?? '–'}</td>
+      <td class="n">${r.est_sessions ?? '-'}</td>
       <td>${+r.automated_events ? `<span class="tag" title="${r.automated_events} automated events">${fmt.compact(r.automated_events)} automated</span>` : ''}</td>
     </tr>`).join('')}</tbody>`;
 }
@@ -332,6 +341,9 @@ function openSettings(a) {
       <span class="hint">Sets day boundaries and work-hour heatmap. Changing it rebuilds this account's history.</span></div>
     <div class="field"><label for="s-seats">Licensed seats</label><input id="s-seats" type="number" min="0" value="${a.licensed_seats ?? ''}" placeholder="Not set" />
       <span class="hint">Optional. User breadth uses seats when set, otherwise users seen in 90 days.</span></div>
+    <div class="field"><label>SharePoint folder</label>
+      <div><button class="btn" id="s-sp" type="button">${ICON.sync}Set up automatic import</button></div>
+      <span class="hint">New files saved in the customer's SharePoint folder are imported on a schedule.</span></div>
     <div class="danger-zone">
       <h3 style="font-size:var(--text-sm);margin:0 0 var(--space-2)">Remove customer</h3>
       <p class="hint" style="margin:0 0 var(--space-3)">Deletes ${esc(a.name)} and all of its stored events, rollups and scores. Other customers are rescored. This cannot be undone.</p>
@@ -343,6 +355,7 @@ function openSettings(a) {
   bg.onclick = close;
   document.getElementById('dr-close').onclick = close;
   document.getElementById('dr-cancel').onclick = close;
+  document.getElementById('s-sp').onclick = () => openFolderEditor(a.account_id, () => toast('SharePoint folder saved'));
   document.getElementById('dr-remove').onclick = () => {
     const box = document.getElementById('rm-box');
     box.innerHTML = `<div class="field" style="margin:0"><label for="rm-confirm">Type the customer name to confirm</label>
@@ -381,4 +394,24 @@ function skeleton() {
   return `<div class="skeleton" style="height:30px;width:280px;margin-bottom:var(--space-6)"></div>
     <div class="grid kpis">${k.repeat(6)}</div>
     <div class="grid cols-2"><div class="card"><div class="skeleton" style="height:290px"></div></div><div class="card"><div class="skeleton" style="height:290px"></div></div></div>`;
+}
+
+
+// Replace a chart with a short message, keeping the box height so the layout does not jump.
+function chartEmpty(id, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  destroyChart(id);
+  const box = el.parentElement;
+  box.querySelector('.chart-msg')?.remove();
+  el.style.display = 'none';
+  box.insertAdjacentHTML('beforeend', `<div class="chart-msg empty">${esc(msg)}</div>`);
+}
+
+function sectionError(id, name, e) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const msg = `${name} could not be drawn: ${e?.message || e}. Refresh the page; if it persists, send this message to support.`;
+  if (el.tagName === 'CANVAS') return chartEmpty(id, msg);
+  el.innerHTML = el.tagName === 'TABLE' ? `<tbody><tr><td class="empty">${esc(msg)}</td></tr></tbody>` : `<div class="empty">${esc(msg)}</div>`;
 }

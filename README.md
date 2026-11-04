@@ -43,7 +43,7 @@ Each customer has its own dashboard. The sidebar lists every customer with its c
 
 ### File formats
 
-Uploads accept CSV and Excel (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`, `.ods`). Excel files are read in the browser with SheetJS (bundled in `public/vendor/`, loaded only when an Excel file is picked). The first sheet that has an `account_id` header is used, so cover or notes sheets are skipped. Long IDs and epoch-ms timestamps are kept exact, and real date cells are converted to ISO text. Excel limits a cell to 32,767 characters, so very long `after_image` values may be cut; emails already matched from earlier uploads are kept.
+Uploads accept CSV and Excel (`.xlsx`, `.xlsm`, `.xlsb`, `.xls`, `.ods`). `.xlsx` and `.xlsm` files are read by a streaming reader in a background worker (`public/js/xlsx-worker.js`, using fflate), so very large exports work: a 101 MB workbook whose text expands to about 900 MB reads in under 30 seconds. Large JSON cells are reduced to the emails they contain while reading. Excel files are read in the browser with SheetJS (bundled in `public/vendor/`, loaded only when an Excel file is picked). The first sheet that has an `account_id` header is used, so cover or notes sheets are skipped. Long IDs and epoch-ms timestamps are kept exact, and real date cells are converted to ISO text. Excel limits a cell to 32,767 characters, so very long `after_image` values may be cut; emails already matched from earlier uploads are kept.
 
 ## Health model
 
@@ -75,6 +75,36 @@ While editing, an impact preview scores every customer with the draft (nothing i
 The model keeps calibrating on its own after that: each upload rescores all history with the saved model, and baselines move from default targets to peer medians to each customer's own history as data builds up.
 
 The defaults can still be set with environment variables (see `app/config.py`), for example `HEALTHY_AT=75`, `W_ENGAGEMENT=0.35`. A model saved in the app takes priority.
+
+## SharePoint auto import
+
+Each customer can watch one SharePoint folder. New `.csv`, `.xlsx` and `.xlsm` files saved there are downloaded and imported for that customer exactly like a manual upload (same checks, same dedupe, same rescoring). Uploads made this way show "SharePoint (automatic)" in Upload history.
+
+### Set up the Microsoft app (once)
+1. In Microsoft Entra admin center, open App registrations, New registration. No redirect URI is needed.
+2. Certificates and secrets: create a client secret and copy its value.
+3. API permissions: add Microsoft Graph, Application permission `Sites.Read.All`, then Grant admin consent. To use sharing links ("Copy link") instead of folder addresses, also add `Files.Read.All`. `Sites.Selected` works too if you grant the app read access to each site.
+4. In Vercel, Project Settings, Environment Variables, add:
+   - `SHAREPOINT_TENANT_ID` (Directory (tenant) ID)
+   - `SHAREPOINT_CLIENT_ID` (Application (client) ID)
+   - `SHAREPOINT_CLIENT_SECRET` (the secret value)
+   - `CRON_SECRET` (any long random string; protects `/api/sync/run`)
+5. Redeploy, then open SharePoint sync in the sidebar and press Test sign in.
+
+### Add a folder for a customer
+SharePoint sync page, Add folder, or the customer's Settings, SharePoint folder. Paste the folder address from the browser or a sharing link. "Also import files already in the folder" imports what is there now; otherwise existing files are marked as a baseline and only files added later are imported. Check now runs a check immediately.
+
+### Schedule
+The check interval (1 to 168 hours, default 6) is set on the SharePoint sync page. A scheduler calls `/api/sync/run` and only customers that are due are checked.
+- Vercel Hobby allows cron jobs once a day only, so `vercel.json` has a daily cron at 06:00 UTC. On Vercel Pro you can change it to hourly (`0 * * * *`).
+- For hourly checks on Hobby, the included GitHub Action `.github/workflows/sharepoint-sync.yml` calls the endpoint every hour. In the GitHub repo add the secret `CRON_SECRET` (same value as Vercel) and the variable `DASHBOARD_URL` (for example `https://your-app.vercel.app`). GitHub pauses scheduled workflows after 60 days with no repo activity; re-enable it from the Actions tab.
+
+### Behaviour
+- Only files directly in the folder are read (not subfolders). Office lock files (`~$...`) and other file types are skipped.
+- A file that is replaced with a new version is imported again; rows already stored are skipped.
+- Files that fail a check (wrong customer, missing columns) are not retried. Other errors are retried up to 3 times.
+- Each run has a time budget under the 300 second function limit. If a folder has more files than fit, the rest are picked up on the next run.
+- `.xls`, `.xlsb` and `.ods` are supported only through manual upload.
 
 ## Supabase setup
 

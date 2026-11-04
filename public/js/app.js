@@ -4,6 +4,7 @@ import { renderPortfolio } from './portfolio.js';
 import { renderAccount } from './account.js';
 import { renderUpload, renderNewCustomer } from './upload.js';
 import { renderModel } from './model.js';
+import { renderSync } from './sync.js';
 
 const view = document.getElementById('view');
 export const state = { status: null, portfolio: null, customers: null };
@@ -36,6 +37,7 @@ export function currentRoute() {
   if (parts[0] === 'model') return { page: 'model' };
   if (parts[0] === 'profile') return { page: 'profile' };
   if (parts[0] === 'users') return { page: 'users' };
+  if (parts[0] === 'sync') return { page: 'sync' };
   return { page: 'overview' };
 }
 
@@ -49,6 +51,7 @@ function renderNav() {
   document.getElementById('nav').innerHTML = `
     ${link('#/', ICON.grid, 'All customers', r.page === 'overview')}
     ${link('#/model', ICON.model, 'Scoring model', r.page === 'model')}
+    ${currentUser?.role === 'admin' ? link('#/sync', ICON.sync, 'SharePoint sync', r.page === 'sync') : ''}
     ${currentUser?.role === 'admin' ? link('#/users', ICON.users, 'Users', r.page === 'users') : ''}
     <div class="nav-label nav-label-row"><span>Customers${list.length ? ` (${list.length})` : ''}</span>
       <a href="#/new" class="icon-link" title="Add customer" aria-label="Add customer">${ICON.plus}</a></div>
@@ -203,6 +206,7 @@ export async function route() {
     else if (r.page === 'model') await renderModel(view);
     else if (r.page === 'profile') await renderProfile(view);
     else if (r.page === 'users') await renderUsers(view);
+    else if (r.page === 'sync') await renderSync(view);
     else await renderPortfolio(view);
   } catch (e) {
     console.error(e);

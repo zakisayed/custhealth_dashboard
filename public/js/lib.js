@@ -55,31 +55,31 @@ export function apiUrl(path) {
 // ---------- formatting
 export const fmt = {
   n(v, d = 0) {
-    if (v === null || v === undefined || Number.isNaN(+v)) return '–';
+    if (v === null || v === undefined || Number.isNaN(+v)) return '-';
     return (+v).toLocaleString('en-US', { maximumFractionDigits: d, minimumFractionDigits: d });
   },
   compact(v) {
-    if (v === null || v === undefined) return '–';
+    if (v === null || v === undefined) return '-';
     return Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(+v);
   },
   date(d) {
-    if (!d) return '–';
+    if (!d) return '-';
     const x = typeof d === 'string' && d.length === 10 ? new Date(d + 'T00:00:00') : new Date(d);
     return x.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   },
   short(d) {
-    if (!d) return '–';
+    if (!d) return '-';
     const x = typeof d === 'string' && d.length === 10 ? new Date(d + 'T00:00:00') : new Date(d);
     return x.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   },
   time(d, tz) {
-    if (!d) return '–';
+    if (!d) return '-';
     try {
       return new Date(d).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: tz || 'UTC' });
     } catch { return new Date(d).toLocaleString(); }
   },
   clock(d, tz) {
-    if (!d) return '–';
+    if (!d) return '-';
     try { return new Date(d).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: tz || 'UTC' }); }
     catch { return new Date(d).toLocaleTimeString(); }
   },
@@ -129,6 +129,7 @@ export const ICON = {
   x: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
   download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4v12M7 11l5 5 5-5M4 20h16"/></svg>',
   gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  sync: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"/></svg>',
   back: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 3L5 8l5 5"/></svg>',
 };
 
@@ -180,9 +181,14 @@ export function chart(id, config) {
   const el = document.getElementById(id);
   if (!el || !window.Chart) return null;
   if (charts.has(id)) charts.get(id).destroy();
+  el.style.display = '';
+  el.parentElement?.querySelector('.chart-msg')?.remove();
   const c = new window.Chart(el, config);
   charts.set(id, c);
   return c;
+}
+export function destroyChart(id) {
+  if (charts.has(id)) { charts.get(id).destroy(); charts.delete(id); }
 }
 export function destroyCharts() {
   for (const c of charts.values()) c.destroy();
