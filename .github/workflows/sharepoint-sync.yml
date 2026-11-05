@@ -1,7 +1,9 @@
 # Calls the dashboard twice an hour. The app decides what is due, using the daily check time
 # set on the SharePoint sync page. GitHub can delay or skip scheduled runs, so calling more
 # often than needed is on purpose; extra calls do nothing.
-# Needs two repository settings (Settings > Secrets and variables > Actions):
+# Reads its settings from the GitHub environment "custhealthdashboard" (environment secrets
+# and variables). Repository-level secrets and variables with the same names also work.
+# Needs two settings:
 #   secret   CRON_SECRET    same value as CRON_SECRET in Vercel
 #   variable DASHBOARD_URL  for example https://your-app.vercel.app
 name: SharePoint sync
@@ -14,6 +16,7 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    environment: custhealthdashboard
     timeout-minutes: 8
     steps:
       - name: Check customer folders
@@ -22,7 +25,7 @@ jobs:
           DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
         run: |
           if [ -z "$CRON_SECRET" ] || [ -z "$DASHBOARD_URL" ]; then
-            echo "::error::Add the repository secret CRON_SECRET and the variable DASHBOARD_URL (Settings > Secrets and variables > Actions)."; exit 1
+            echo "::error::Add the secret CRON_SECRET and the variable DASHBOARD_URL to the custhealthdashboard environment (Settings > Environments) or to the repository."; exit 1
           fi
           curl -sS --fail-with-body --max-time 330 \
             -H "Authorization: Bearer $CRON_SECRET" \
