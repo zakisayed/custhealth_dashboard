@@ -61,14 +61,18 @@ export async function renderSync(view) {
       <section class="card">
         <div class="card-head"><div><h2>Daily check time</h2><div class="sub">Customer folders and the execution log are checked once a day at this time.</div></div></div>
         <form id="int-form" class="sync-int" novalidate>
-          <div class="field" style="margin:0"><label for="run-time">Time</label>
-            <select id="run-time">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === st.run_hour ? 'selected' : ''}>${String(h).padStart(2, '0')}:00</option>`).join('')}</select></div>
+          <div class="field" style="margin:0"><label for="run-time">Time (24 hour)</label>
+            <div class="time-pick">
+              <select id="run-time" aria-label="Hour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === st.run_hour ? 'selected' : ''}>${String(h).padStart(2, '0')}</option>`).join('')}</select>
+              <span class="time-sep">:</span>
+              <select id="run-min" aria-label="Minute">${Array.from({ length: 60 }, (_, m) => `<option value="${m}" ${m === (st.run_minute || 0) ? 'selected' : ''}>${String(m).padStart(2, '0')}</option>`).join('')}</select>
+            </div></div>
           <div class="field" style="margin:0"><label for="run-tz">Timezone</label>
             <select id="run-tz">${Object.entries(info.timezones).map(([k, l]) => `<option value="${k}" ${k === st.run_tz ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
           <button class="btn primary" id="int-save">Save</button>
         </form>
         <p class="small muted" style="margin-top:var(--space-3)">Next check: <b>${atTz(st.next_run_at)}</b> (${atTz(st.next_run_at, st.run_tz === 'UTC' ? 'PKT' : 'UTC')}).
-          The scheduler wakes up every hour, so the check starts within the hour after this time. Pick a time after the export job finishes.</p>
+          The scheduler calls the app every 30 minutes, so the check starts within about 30 minutes after this time (GitHub can add some delay). Pick a time after the export job finishes.</p>
         ${st.updated_by ? `<p class="small faint">Last changed by ${esc(st.updated_by)} on ${fmt.time(st.updated_at)}</p>` : ''}
       </section>
       <section class="card">
@@ -104,7 +108,7 @@ export async function renderSync(view) {
   view.querySelector('#int-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = view.querySelector('#int-save');
-    const h = +view.querySelector('#run-time').value, m = 0;
+    const h = +view.querySelector('#run-time').value, m = +view.querySelector('#run-min').value;
     btn.disabled = true;
     try {
       const v = await api('/api/sharepoint/settings', { method: 'PUT', json: { run_hour: h, run_minute: m || 0, run_tz: view.querySelector('#run-tz').value } });

@@ -426,3 +426,7 @@ tr.moved td { background: var(--watch-soft); }
 td.pos { color: var(--healthy); } td.neg { color: var(--risk); }
 .result-card { border-color: color-mix(in srgb, var(--primary) 35%, var(--border)); margin-top: 0; margin-bottom: var(--space-4); }
 @media (max-width: 640px) { .wrow { grid-template-columns: 1fr 80px; } .wrow label { grid-column: 1 / -1; } }
+
+.time-pick { display: flex; align-items: center; gap: var(--space-2); }
+.time-pick select { flex: 1; min-width: 0; }
+.time-sep { font-weight: 600; color: var(--color-text-muted, inherit); }
