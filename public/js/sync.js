@@ -55,7 +55,7 @@ export async function renderSync(view) {
       <div class="actions"><button class="btn primary" id="run-all" ${info.configured && info.sources.length ? '' : 'disabled'}>${ICON.upload}Check all folders now</button></div></div>
     ${info.scheduler?.missed ? `<div class="alert err" style="margin-bottom:var(--space-4)">${ICON.at_risk}<div><b>The scheduler did not call the app after the ${esc(st.label)} check time.</b>
       Last scheduler call: ${info.scheduler.last_call_at ? atTz(info.scheduler.last_call_at) : 'never'}. Checks only run when the scheduler calls <code>/api/sync/run</code>.
-      In GitHub, add the repository secret <code>CRON_SECRET</code> (same value as in Vercel) and the variable <code>DASHBOARD_URL</code> under Settings, Secrets and variables, Actions.
+      ${info.scheduler.db?.enabled ? 'The built-in scheduler is on; check its last response below.' : 'Turn on the built-in scheduler below so checks run on time.'}
       Until then, press Check all folders now.</div></div>` : ''}
     <div class="grid cols-2">
       <section class="card">
@@ -72,8 +72,9 @@ export async function renderSync(view) {
           <button class="btn primary" id="int-save">Save</button>
         </form>
         <p class="small muted" style="margin-top:var(--space-3)">Next check: <b>${atTz(st.next_run_at)}</b> (${atTz(st.next_run_at, st.run_tz === 'UTC' ? 'PKT' : 'UTC')}).
-          The scheduler calls the app every 30 minutes, so the check starts within about 30 minutes after this time (GitHub can add some delay). Pick a time after the export job finishes.</p>
+          ${info.scheduler?.db?.enabled ? 'The built-in scheduler calls the app every 5 minutes, so the check starts within 5 minutes after this time.' : 'Without the built-in scheduler, checks depend on GitHub, which can be late or skip runs.'} Pick a time after the export job finishes.</p>
         ${st.updated_by ? `<p class="small faint">Last changed by ${esc(st.updated_by)} on ${fmt.time(st.updated_at)}</p>` : ''}
+        ${schedBlock(info.scheduler?.db, info.scheduler?.last_call_at)}
       </section>
       <section class="card">
         <div class="card-head"><div><h2>Connection</h2><div class="sub">Set in the Vercel project environment variables, then redeploy.</div></div>
@@ -115,6 +116,14 @@ export async function renderSync(view) {
       toast(`Folders and the execution log are now checked ${daily(v)}`);
       renderSync(view);
     } catch (err) { toast(err.message, 5000); btn.disabled = false; }
+  });
+  view.querySelector('#sched-toggle')?.addEventListener('click', async (e) => {
+    const b = e.currentTarget, on = b.dataset.on !== '1'; b.disabled = true;
+    try {
+      await api('/api/sharepoint/scheduler', { method: 'PUT', json: { enabled: on } });
+      toast(on ? 'Built-in scheduler is on. It calls the app every 5 minutes.' : 'Built-in scheduler is off.');
+    } catch (err) { toast(err.message, 9000); }
+    renderSync(view);
   });
   renderExecution(view.querySelector('#exec-card'), info, () => renderSync(view));
   view.querySelector('#test-conn')?.addEventListener('click', async (e) => {
@@ -261,6 +270,22 @@ function execBody(ex) {
         <td class="small sp-msg">${r.file_name ? (r.file_url ? `<a href="${esc(r.file_url)}" target="_blank" rel="noopener">${esc(r.file_name)}</a>` : esc(r.file_name)) : '<span class="faint">No file</span>'}</td>
         <td class="small">${dashboardCell(r)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No customers in this run.</td></tr>'}</tbody>
     </table></div>`;
+}
+
+function schedBlock(db, lastCall) {
+  if (!db) return '';
+  const r = db.last_response, run = (db.last_runs || [])[0];
+  const resp = r ? (r.status_code >= 200 && r.status_code < 300 ? `<span class="badge healthy">HTTP ${r.status_code}</span>` : `<span class="badge at_risk">${r.status_code ? `HTTP ${r.status_code}` : 'No response'}</span>`) : '';
+  return `<div class="sched-box">
+    <div class="sched-head"><div><b>Built-in scheduler</b> ${db.enabled ? '<span class="badge healthy">On</span>' : '<span class="badge calibrated">Off</span>'}
+      <div class="small muted">${db.enabled ? 'Your Supabase database calls the app every 5 minutes (pg_cron). Calls with nothing due finish straight away.'
+        : 'Runs inside your Supabase database (pg_cron and pg_net), so checks start on time without GitHub.'}</div></div>
+      <button class="btn ${db.enabled ? "" : "primary"}" id="sched-toggle" data-on="${db.enabled ? '1' : '0'}">${db.enabled ? 'Turn off' : 'Turn on'}</button></div>
+    ${db.enabled ? `<p class="small muted" style="margin:var(--space-2) 0 0">Calls <code>${esc(db.url || '')}</code><br>
+      Last database call: ${run ? `${atTz(run.start_time)} (${esc(run.status)})` : 'not yet'} ${resp ? `· last response ${resp}${r.created ? ` at ${atTz(r.created)}` : ''}` : ''}<br>
+      Last call received by the app: ${lastCall ? atTz(lastCall) : 'never'}</p>` : ''}
+    ${!db.available && !db.enabled ? '<p class="small faint" style="margin:var(--space-2) 0 0">pg_cron or pg_net is not available on this database. On Supabase, enable both under Database, Extensions.</p>' : ''}
+  </div>`;
 }
 
 function renderExecution(el, info, reload) {

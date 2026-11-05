@@ -332,6 +332,45 @@ def _time_needed(size: int | None) -> float:
     return 20 + mb * 1.5   # download + read + store, measured on a 101 MB workbook with headroom
 
 
+def heartbeat() -> None:
+    """Remember the last time the scheduler called, even when nothing was due."""
+    with connect() as conn:
+        conn.execute("""insert into app_settings (key, value) values ('scheduler_heartbeat', %s)
+                        on conflict (key) do update set value=excluded.value""", [_now().isoformat()])
+
+
+def last_heartbeat(conn):
+    r = conn.execute("select value from app_settings where key='scheduler_heartbeat'").fetchone()
+    return datetime.fromisoformat(r["value"]) if r and r["value"] else None
+
+
+def _log_due(log_src: dict | None, force: bool = False) -> bool:
+    if not log_src:
+        return False
+    today = slot_now()
+    # read once a day; if the log has not been rewritten yet, keep looking each hour for a while
+    return bool(force or not log_src.get("last_read_at")
+                or datetime.fromisoformat(log_src["last_read_at"]) < today
+                or (log_src.get("last_status") in ("error", "unchanged") and _now() < today + LOG_RETRY))
+
+
+def anything_due() -> bool:
+    """Cheap check so frequent scheduler calls do nothing when there is no work."""
+    with connect() as conn:
+        log_src = get_log_source(conn)
+        if _log_due(log_src):
+            if log_src.get("last_status") not in ("error", "unchanged"):
+                return True
+            # retry an unchanged/errored log at most once an hour
+            last = log_src.get("last_read_at")
+            if not last or _now() - datetime.fromisoformat(last) >= timedelta(minutes=55):
+                return True
+        slot = last_slot(get_settings(conn))
+        return bool(conn.execute(
+            """select 1 from sharepoint_sources where enabled
+               and (backlog or last_checked_at is null or last_checked_at < %s) limit 1""", [slot]).fetchone())
+
+
 def run_sync(trigger: str = "cron", account_id: int | None = None, force: bool = False,
              budget_seconds: float | None = None) -> dict:
     budget = budget_seconds or float(os.environ.get("SYNC_BUDGET_SECONDS", "270"))
@@ -340,6 +379,10 @@ def run_sync(trigger: str = "cron", account_id: int | None = None, force: bool =
     if not sp.configured():
         return {"ok": False, "message": "SharePoint is not set up yet. Add the tenant id, client id and "
                 "client secret in the Vercel environment variables.", "customers": []}
+    if trigger == "cron":
+        heartbeat()
+        if account_id is None and not force and not anything_due():
+            return {"ok": True, "idle": True, "message": "Nothing due", "customers": [], "checked": 0, "imported": 0, "failed": 0}
     owner = f"{trigger}-{os.getpid()}-{time.time_ns()}"
     if not _lock(owner, int(budget) + 60):
         return {"ok": False, "busy": True, "message": "Another check is already running. Try again in a few minutes.",
@@ -351,12 +394,7 @@ def run_sync(trigger: str = "cron", account_id: int | None = None, force: bool =
         with connect() as conn:
             log_src = get_log_source(conn)
         if log_src and account_id is None:
-            today = slot_now()
-            # read once a day; if the log has not been rewritten yet, keep looking each hour for a while
-            log_due = (force or not log_src.get("last_read_at")
-                       or datetime.fromisoformat(log_src["last_read_at"]) < today
-                       or (log_src.get("last_status") in ("error", "unchanged") and _now() < today + LOG_RETRY))
-            if log_due:
+            if _log_due(log_src, force):
                 summary["log"] = read_execution_log(force=force)
         with connect() as conn:
             slot = last_slot(get_settings(conn))

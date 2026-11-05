@@ -430,3 +430,7 @@ td.pos { color: var(--healthy); } td.neg { color: var(--risk); }
 .time-pick { display: flex; align-items: center; gap: var(--space-2); }
 .time-pick select { flex: 1; min-width: 0; }
 .time-sep { font-weight: 600; color: var(--color-text-muted, inherit); }
+
+.sched-box { margin-top: var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.sched-head { display: flex; gap: var(--space-3); align-items: flex-start; justify-content: space-between; }
+.sched-head .btn { flex-shrink: 0; }

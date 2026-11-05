@@ -316,6 +316,7 @@ def api_recompute():
 # ----------------------------------------------------------------------------- SharePoint folder watch
 from . import sharepoint as SP  # noqa: E402
 from . import sync as SYNC  # noqa: E402
+from . import dbcron as DBCRON  # noqa: E402
 
 
 def _cron_ok(request: Request) -> bool:
@@ -326,6 +327,38 @@ def _cron_ok(request: Request) -> bool:
     header = request.headers.get("authorization", "")
     given = header[7:].strip() if header.lower().startswith("bearer ") else ""
     return hmac.compare_digest(given.encode(), secret.encode())
+
+
+class SchedulerIn(BaseModel):
+    enabled: bool
+
+
+def _public_base(request: Request) -> str:
+    env = (os.environ.get("DASHBOARD_URL") or "").strip()
+    if env:
+        return env.rstrip("/")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    proto = request.headers.get("x-forwarded-proto") or ("http" if host.startswith(("localhost", "127.")) else "https")
+    return f"{proto}://{host}"
+
+
+@app.put("/api/sharepoint/scheduler")
+def api_sharepoint_scheduler(body: SchedulerIn, request: Request):
+    """Turn the built-in Supabase scheduler (pg_cron + pg_net) on or off."""
+    secret = (os.environ.get("CRON_SECRET") or "").strip()
+    if body.enabled and not secret:
+        raise HTTPException(status_code=400, detail="Set CRON_SECRET in the Vercel environment variables first.")
+    try:
+        with connect() as conn:
+            if body.enabled:
+                return DBCRON.enable(conn, _public_base(request), secret)
+            return DBCRON.disable(conn)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=(
+            "Could not set up the database scheduler: " + str(exc).splitlines()[0][:300]
+            + ". In Supabase open Database > Extensions and enable pg_cron and pg_net, then try again."))
 
 
 @app.api_route("/api/sync/run", methods=["GET", "POST"])
@@ -390,6 +423,13 @@ def api_sharepoint():
                from sharepoint_sources s join accounts a using (account_id) order by lower(a.name)""").fetchall()
         runs = conn.execute("select * from sharepoint_runs order by run_id desc limit 10").fetchall()
         last_cron = conn.execute("select max(started_at) t from sharepoint_runs where trigger='cron'").fetchone()["t"]
+        beat = SYNC.last_heartbeat(conn)
+        if beat and (last_cron is None or beat > last_cron):
+            last_cron = beat
+        try:
+            db_sched = DBCRON.status(conn)
+        except Exception as exc:  # never break the page over this
+            db_sched = {"available": False, "enabled": False, "error": str(exc)[:200]}
         log = SYNC.get_log_source(conn)
         execution = _execution(conn)
         history = conn.execute(
@@ -398,7 +438,7 @@ def api_sharepoint():
                from execution_runs r order by r.started_at desc nulls last limit 60""").fetchall()
     return {"credentials": SP.config_status(), "configured": SP.configured(),
             "cron_secret_set": bool((os.environ.get("CRON_SECRET") or "").strip()),
-            "settings": settings, "timezones": SYNC.TZ_LABEL, "scheduler": _scheduler_health(settings, last_cron),
+            "settings": settings, "timezones": SYNC.TZ_LABEL, "scheduler": {**_scheduler_health(settings, last_cron), "db": db_sched},
             "sources": [_source_row(r, settings) for r in rows], "runs": runs,
             "log": log, "execution": execution, "execution_history": history}
 
