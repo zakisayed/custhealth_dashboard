@@ -240,6 +240,8 @@ create table if not exists sharepoint_files (
   primary key (account_id, item_id)
 );
 
+alter table sharepoint_files add column if not exists folder text;   -- subfolder path, null for top level
+
 create table if not exists sharepoint_runs (
   run_id      bigserial primary key,
   trigger     text,                    -- cron | manual

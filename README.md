@@ -96,8 +96,8 @@ SharePoint sync page, Add folder, or the customer's Settings, SharePoint folder.
 
 ### Schedule
 Set the daily check time on the SharePoint sync page: an hour from 00:00 to 23:00 and a timezone, UTC or PKT (UTC+5). Default is 13:00 PKT. Pick a time after the export job finishes (the sample log finished at 07:14 UTC, which is 12:14 PKT). A scheduler calls `/api/sync/run` every hour; the first call after the check time checks every customer folder and reads the execution log. A folder added during the day is checked on the next hourly call, and Check now always runs right away.
-- For hourly scheduler calls on Vercel Hobby, use the included GitHub Action `.github/workflows/sharepoint-sync.yml` (runs at minute 17 of every hour). In the GitHub repo add the secret `CRON_SECRET` (same value as Vercel) and the variable `DASHBOARD_URL` (for example `https://your-app.vercel.app`). GitHub pauses scheduled workflows after 60 days with no repo activity; re-enable it from the Actions tab.
-- Vercel Hobby allows cron jobs once a day only, so `vercel.json` keeps a daily cron at 06:00 UTC as a backup. On Vercel Pro you can change it to hourly (`0 * * * *`).
+- For hourly scheduler calls on Vercel Hobby, use the included GitHub Action `.github/workflows/sharepoint-sync.yml` (runs at minutes 7 and 37 of every hour, since GitHub often delays or skips scheduled runs). In the GitHub repo add the secret `CRON_SECRET` (same value as Vercel) and the variable `DASHBOARD_URL` (for example `https://your-app.vercel.app`). GitHub pauses scheduled workflows after 60 days with no repo activity; re-enable it from the Actions tab. If the secret or variable is missing the workflow now fails (red X) instead of silently skipping, and the SharePoint sync page shows a warning when no scheduler call arrived within 75 minutes after the daily check time. A free external scheduler such as cron-job.org can be used instead: call `GET {DASHBOARD_URL}/api/sync/run` hourly with the header `Authorization: Bearer <CRON_SECRET>`.
+- Vercel Hobby allows cron jobs once a day only, so `vercel.json` keeps a daily cron at 08:00 UTC (13:00 PKT) as a backup. It is fixed in the file, so edit it if you change the daily check time. On Vercel Pro you can change it to hourly (`0 * * * *`).
 
 ### Execution status (export job log)
 Set the execution log folder on the SharePoint sync page (Execution status, Set log folder). At each daily check the newest `.log` file in that folder is read. If it has not been rewritten yet, it is checked again every hour for 6 hours.
@@ -108,7 +108,7 @@ Set the execution log folder on the SharePoint sync page (Execution status, Set 
 - Customer days are matched on the date in the log (the export runs per UTC day).
 
 ### Behaviour
-- Only files directly in the folder are read (not subfolders). Office lock files (`~$...`) and other file types are skipped.
+- Files in the folder and its subfolders (up to 3 levels deep) are read; the subfolder path is shown next to the file. Office lock files (`~$...`) and other file types are skipped.
 - A file that is replaced with a new version is imported again; rows already stored are skipped.
 - Files that fail a check (wrong customer, missing columns) are not retried. Other errors are retried up to 3 times.
 - Each run has a time budget under the 300 second function limit. If a folder has more files than fit, the rest are picked up on the next run.

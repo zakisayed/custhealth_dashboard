@@ -53,6 +53,10 @@ export async function renderSync(view) {
     <div class="page-head"><div><h1>SharePoint sync</h1>
       <div class="sub">New files saved in a customer's SharePoint folder are imported automatically, the same way as a manual upload.</div></div>
       <div class="actions"><button class="btn primary" id="run-all" ${info.configured && info.sources.length ? '' : 'disabled'}>${ICON.upload}Check all folders now</button></div></div>
+    ${info.scheduler?.missed ? `<div class="alert err" style="margin-bottom:var(--space-4)">${ICON.at_risk}<div><b>The scheduler did not call the app after the ${esc(st.label)} check time.</b>
+      Last scheduler call: ${info.scheduler.last_call_at ? atTz(info.scheduler.last_call_at) : 'never'}. Checks only run when the scheduler calls <code>/api/sync/run</code>.
+      In GitHub, add the repository secret <code>CRON_SECRET</code> (same value as in Vercel) and the variable <code>DASHBOARD_URL</code> under Settings, Secrets and variables, Actions.
+      Until then, press Check all folders now.</div></div>` : ''}
     <div class="grid cols-2">
       <section class="card">
         <div class="card-head"><div><h2>Daily check time</h2><div class="sub">Customer folders and the execution log are checked once a day at this time.</div></div></div>
@@ -74,7 +78,7 @@ export async function renderSync(view) {
           ${credRow('tenant', 'SHAREPOINT_TENANT_ID')}${credRow('client', 'SHAREPOINT_CLIENT_ID')}${credRow('secret', 'SHAREPOINT_CLIENT_SECRET')}
           <li class="${info.cron_secret_set ? 'done' : 'err'}">${info.cron_secret_set ? ICON.check : ICON.x}<span><code>CRON_SECRET</code> ${info.cron_secret_set ? 'is set' : 'is missing, scheduled checks are refused until it is set'}</span></li>
         </ul>
-        <p class="small muted" style="margin-top:var(--space-3)">Last scheduled or manual run: ${lastRun ? `${fmt.time(lastRun.started_at)} (${esc(lastRun.trigger)}) · ${esc(lastRun.message || 'running')}` : 'none yet'}</p>
+        <p class="small muted" style="margin-top:var(--space-3)">Last scheduler call: ${info.scheduler?.last_call_at ? atTz(info.scheduler.last_call_at) : 'never'}<br>Last scheduled or manual run: ${lastRun ? `${fmt.time(lastRun.started_at)} (${esc(lastRun.trigger)}) · ${esc(lastRun.message || 'running')}` : 'none yet'}</p>
       </section>
     </div>
     <section class="card section" id="exec-card"></section>
@@ -141,7 +145,7 @@ export async function openFolderEditor(accountId, onSaved) {
   const dr = document.getElementById('drawer'), bg = document.getElementById('drawer-bg');
   dr.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center"><h2>SharePoint folder</h2><button class="btn" id="dr-close" aria-label="Close">${ICON.x}</button></div>
-    <p class="muted small">${esc(c.name)} · checked ${daily(data.settings)}. New .csv, .xlsx and .xlsm files are imported into this customer.</p>
+    <p class="muted small">${esc(c.name)} · checked ${daily(data.settings)}. New .csv, .xlsx and .xlsm files in this folder and its subfolders are imported into this customer.</p>
     ${data.configured ? '' : `<div class="alert err">${ICON.at_risk}<div>SharePoint is not set up yet. Add <code>SHAREPOINT_TENANT_ID</code>, <code>SHAREPOINT_CLIENT_ID</code> and <code>SHAREPOINT_CLIENT_SECRET</code> in Vercel and redeploy.</div></div>`}
     <div class="field"><label for="sp-url">Folder link</label>
       <input id="sp-url" type="url" placeholder="https://yourcompany.sharepoint.com/sites/Team/Shared Documents/Exports/${esc(c.name)}" value="${esc(s?.folder_url || '')}" autocomplete="off" />
@@ -200,7 +204,7 @@ export async function renderFolderCard(el, accountId) {
         ${s.enabled ? '' : '<span class="tag">Paused</span>'} ${badge(SRC, s.last_status)} <span class="muted">${esc(s.last_message || '')}</span></p>
       <div class="table-wrap"><table class="tbl">
         <thead><tr><th>File</th><th>Status</th><th>Details</th><th>Modified</th><th>Imported</th></tr></thead>
-        <tbody>${data.files.map((f) => `<tr><td>${f.web_url ? `<a href="${esc(f.web_url)}" target="_blank" rel="noopener">${esc(f.name)}</a>` : esc(f.name)}<div class="faint small">${f.size ? `${fmt.n(f.size / 1048576, 1)} MB` : ''}</div></td>
+        <tbody>${data.files.map((f) => `<tr><td>${f.web_url ? `<a href="${esc(f.web_url)}" target="_blank" rel="noopener">${esc(f.name)}</a>` : esc(f.name)}<div class="faint small">${f.folder ? `${esc(f.folder)} · ` : ''}${f.size ? `${fmt.n(f.size / 1048576, 1)} MB` : ''}</div></td>
           <td>${badge(STATUS, f.status)}</td><td class="small sp-msg">${esc(f.message || '')}</td>
           <td class="nw small">${when(f.modified_at)}</td><td class="nw small">${when(f.processed_at)}</td></tr>`).join('')
           || '<tr><td colspan="5" class="empty">No files seen yet. Files appear here after the next check.</td></tr>'}</tbody>

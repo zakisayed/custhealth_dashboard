@@ -261,9 +261,10 @@ def _scan(conn, src: dict) -> dict:
             msg = ("Already in the folder when watching started" if baseline else
                    None if ok else "Not a .csv, .xlsx or .xlsm file")
             conn.execute(
-                """insert into sharepoint_files (account_id, item_id, name, size, modified_at, ctag, status, message, web_url)
-                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s) on conflict do nothing""",
-                [src["account_id"], f["item_id"], f["name"], f["size"], f["modified_at"], f["ctag"], status, msg, f["web_url"]])
+                """insert into sharepoint_files (account_id, item_id, name, folder, size, modified_at, ctag, status, message, web_url)
+                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) on conflict do nothing""",
+                [src["account_id"], f["item_id"], f["name"], f.get("folder"), f["size"], f["modified_at"], f["ctag"],
+                 status, msg, f["web_url"]])
             new += status == "pending"
         elif k["ctag"] != f["ctag"] and k["status"] != "processing":
             status = "pending" if ok else "skipped"

@@ -369,6 +369,15 @@ def _execution(conn, run_key: str | None = None) -> dict | None:
             "records": sum(x["records"] or 0 for x in results)}
 
 
+def _scheduler_health(settings: dict, last_cron) -> dict:
+    """Did the scheduler call the app after today's check time? Calls arrive from GitHub Actions or Vercel Cron."""
+    from datetime import datetime as _dt, timezone as _tz
+    slot = _dt.fromisoformat(settings["last_slot"])
+    late = _dt.now(_tz.utc) - slot > timedelta(minutes=75)
+    missed = late and (last_cron is None or last_cron < slot)
+    return {"last_call_at": last_cron, "missed": missed, "slot": settings["last_slot"]}
+
+
 @app.get("/api/sharepoint")
 def api_sharepoint():
     with connect() as conn:
@@ -380,6 +389,7 @@ def api_sharepoint():
                       (select count(*) from sharepoint_files f where f.account_id=s.account_id and f.status in ('pending','processing')) files_waiting
                from sharepoint_sources s join accounts a using (account_id) order by lower(a.name)""").fetchall()
         runs = conn.execute("select * from sharepoint_runs order by run_id desc limit 10").fetchall()
+        last_cron = conn.execute("select max(started_at) t from sharepoint_runs where trigger='cron'").fetchone()["t"]
         log = SYNC.get_log_source(conn)
         execution = _execution(conn)
         history = conn.execute(
@@ -388,7 +398,7 @@ def api_sharepoint():
                from execution_runs r order by r.started_at desc nulls last limit 60""").fetchall()
     return {"credentials": SP.config_status(), "configured": SP.configured(),
             "cron_secret_set": bool((os.environ.get("CRON_SECRET") or "").strip()),
-            "settings": settings, "timezones": SYNC.TZ_LABEL,
+            "settings": settings, "timezones": SYNC.TZ_LABEL, "scheduler": _scheduler_health(settings, last_cron),
             "sources": [_source_row(r, settings) for r in rows], "runs": runs,
             "log": log, "execution": execution, "execution_history": history}
 
@@ -469,7 +479,7 @@ def api_account_sharepoint(account_id: int):
         settings = SYNC.get_settings(conn)
         src = conn.execute("select * from sharepoint_sources where account_id=%s", [account_id]).fetchone()
         files = conn.execute(
-            """select item_id, name, size, modified_at, status, message, upload_id, rows_new, rows_duplicate, attempts,
+            """select item_id, name, folder, size, modified_at, status, message, upload_id, rows_new, rows_duplicate, attempts,
                       web_url, first_seen_at, processed_at
                from sharepoint_files where account_id=%s order by coalesce(processed_at, first_seen_at) desc limit 100""",
             [account_id]).fetchall()

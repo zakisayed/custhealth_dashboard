@@ -1,5 +1,6 @@
-# Runs the SharePoint folder check every hour. The app decides which customers are due,
-# using the check interval set in the dashboard (Settings > SharePoint sync).
+# Calls the dashboard twice an hour. The app decides what is due, using the daily check time
+# set on the SharePoint sync page. GitHub can delay or skip scheduled runs, so calling more
+# often than needed is on purpose; extra calls do nothing.
 # Needs two repository settings (Settings > Secrets and variables > Actions):
 #   secret   CRON_SECRET    same value as CRON_SECRET in Vercel
 #   variable DASHBOARD_URL  for example https://your-app.vercel.app
@@ -7,7 +8,7 @@ name: SharePoint sync
 
 on:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "7,37 * * * *"
   workflow_dispatch: {}
 
 jobs:
@@ -21,7 +22,7 @@ jobs:
           DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
         run: |
           if [ -z "$CRON_SECRET" ] || [ -z "$DASHBOARD_URL" ]; then
-            echo "CRON_SECRET or DASHBOARD_URL is not set, skipping."; exit 0
+            echo "::error::Add the repository secret CRON_SECRET and the variable DASHBOARD_URL (Settings > Secrets and variables > Actions)."; exit 1
           fi
           curl -sS --fail-with-body --max-time 330 \
             -H "Authorization: Bearer $CRON_SECRET" \

@@ -176,20 +176,31 @@ def resolve(url: str) -> dict:
     return it
 
 
-def list_files(drive_id: str, item_id: str) -> list[dict]:
-    out = []
+MAX_DEPTH = 3   # subfolders read below the watched folder
+
+
+def list_files(drive_id: str, item_id: str, depth: int = MAX_DEPTH, _prefix: str = "") -> list[dict]:
+    """Files in the folder and its subfolders (up to MAX_DEPTH levels). Office lock files are skipped."""
+    out, subfolders = [], []
     url = f"/drives/{drive_id}/items/{item_id}/children"
     params = {"$top": "200", "$select": "id,name,size,file,folder,lastModifiedDateTime,cTag,eTag,webUrl"}
     while url:
         page = graph(url, params)
         params = None
         for d in page.get("value", []):
-            if "file" not in d or d.get("name", "").startswith("~$"):
+            name = d.get("name", "")
+            if "folder" in d:
+                subfolders.append((d["id"], name))
                 continue
-            out.append({"item_id": d["id"], "name": d["name"], "size": d.get("size"),
+            if "file" not in d or name.startswith("~$"):
+                continue
+            out.append({"item_id": d["id"], "name": name, "folder": _prefix or None, "size": d.get("size"),
                         "modified_at": d.get("lastModifiedDateTime"), "ctag": d.get("cTag") or d.get("eTag"),
                         "web_url": d.get("webUrl")})
         url = page.get("@odata.nextLink")
+    if depth > 0:
+        for fid, fname in subfolders:
+            out += list_files(drive_id, fid, depth - 1, f"{_prefix}/{fname}" if _prefix else fname)
     return out
 
 
