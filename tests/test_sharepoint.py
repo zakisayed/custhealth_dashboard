@@ -96,7 +96,7 @@ assert up == {"uploaded_by": sync.UPLOADER, "status": "complete"}, up
 assert emails == 2, emails
 assert st == {"bc_week1.csv": "complete", "readme.txt": "skipped"}, st
 
-# 3. not due again within the interval
+# 3. not due again until the next daily check time
 out = c.get("/api/sync/run", headers={"Authorization": "Bearer test-cron-secret"}).json()
 assert out["checked"] == 0, out
 
@@ -139,17 +139,26 @@ out = c.post("/api/sharepoint/run").json()
 assert out.get("busy"), out
 sync._unlock("someone")
 
-# 8. settings: interval limits and admin-only
-assert c.put("/api/sharepoint/settings", json={"interval_hours": 0.2}).status_code == 400
-assert c.put("/api/sharepoint/settings", json={"interval_hours": 3}).status_code == 200
+# 8. settings: daily time and timezone
+assert c.put("/api/sharepoint/settings", json={"run_hour": 24, "run_tz": "PKT"}).status_code == 400
+assert c.put("/api/sharepoint/settings", json={"run_hour": 9, "run_tz": "EST"}).status_code == 400
+r = c.put("/api/sharepoint/settings", json={"run_hour": 13, "run_tz": "PKT"})
+assert r.status_code == 200, r.text
 info = c.get("/api/sharepoint").json()
-assert info["settings"]["interval_hours"] == 3 and len(info["sources"]) == 2, info
+assert info["settings"]["run_hour"] == 13 and info["settings"]["run_tz"] == "PKT" and len(info["sources"]) == 2, info
 assert info["cron_secret_set"] is True
+from datetime import datetime, timezone as _tz
+st = {"run_hour": 13, "run_minute": 0, "run_tz": "PKT"}
+assert sync.last_slot(st, datetime(2026, 11, 5, 9, 0, tzinfo=_tz.utc)) == datetime(2026, 11, 5, 8, 0, tzinfo=_tz.utc)
+assert sync.last_slot(st, datetime(2026, 11, 5, 7, 59, tzinfo=_tz.utc)) == datetime(2026, 11, 4, 8, 0, tzinfo=_tz.utc)
+st = {"run_hour": 2, "run_minute": 0, "run_tz": "UTC"}
+assert sync.last_slot(st, datetime(2026, 11, 5, 1, 0, tzinfo=_tz.utc)) == datetime(2026, 11, 4, 2, 0, tzinfo=_tz.utc)
 
-# 9. due logic: an old last check makes the customer due again
+# 9. due logic: checked before today's check time = due; checked after it = not due
 with connect() as conn:
-    conn.execute("update sharepoint_sources set last_checked_at = now() - interval '4 hours' where account_id=46593239")
-    conn.execute("update sharepoint_sources set last_checked_at = now() - interval '1 hour' where account_id=777")
+    slot = sync.last_slot(sync.get_settings(conn))
+    conn.execute("update sharepoint_sources set last_checked_at = %s - interval '1 minute' where account_id=46593239", [slot])
+    conn.execute("update sharepoint_sources set last_checked_at = %s + interval '1 minute' where account_id=777", [slot])
 out = c.get("/api/sync/run", headers={"Authorization": "Bearer test-cron-secret"}).json()
 assert [x["account_id"] for x in out["customers"]] == [46593239], out
 

@@ -29,6 +29,11 @@ export async function renderAccount(view, id) {
   const prev7 = hist.length > 7 ? hist[hist.length - 8].score : null;
   const scoreChg = prev7 === null ? null : +L.score - prev7;
   const types = m.object_types_30d || [];
+  const quiet = new Set((d.no_activity_days || []).map(day));
+  const lastExec = (d.executions || [])[0];
+  const execAlert = lastExec?.status === 'failed'
+    ? `<div class="alert err" style="margin-bottom:var(--space-4)">${ICON.at_risk}<div>The export for ${fmt.date(lastExec.export_date)} failed${lastExec.message ? `: ${esc(lastExec.message)}` : ''}. That day is not counted until a later export covers it.</div></div>`
+    : '';
 
   view.innerHTML = `
     <div class="page-head">
@@ -45,6 +50,7 @@ export async function renderAccount(view, id) {
     </div>
     ${F.stale_days > 14 ? `<div class="alert info" style="margin-bottom:var(--space-4)">${ICON.info}<div>The latest data for ${esc(a.name)} is from ${fmt.date(F.data_through)}, ${F.stale_days} days ago. Scores reflect usage up to that date. <a href="#/c/${a.account_id}/upload">Upload a newer export</a> to refresh them.</div></div>` : ''}
 
+    ${execAlert}
     <div class="grid kpis">
       <div class="card kpi"><div class="label">Health score</div>
         <div class="value num" style="color:${scoreColor(+L.score, th)}">${fmt.n(L.score)}<small> / 100</small></div>
@@ -175,7 +181,8 @@ export async function renderAccount(view, id) {
     const first = dailyDays[0]?.d || through;
     const from = range ? [addDays(through, -(range - 1)), first].sort()[1] : first;
     const inRange = dailyDays.filter((r) => r.d >= from && r.d <= through);
-    if (!inRange.length) return chartEmpty('ac-activity', dailyDays.length ? 'No user activity in this range. Try All.' : 'No user activity yet. System events and alarms are not shown here.');
+    const quietIn = [...quiet].some((q) => q >= from && q <= through);
+    if (!inRange.length && !quietIn) return chartEmpty('ac-activity', dailyDays.length ? 'No user activity in this range. Try All.' : 'No user activity yet. System events and alarms are not shown here.');
     const days = fillDates(inRange, 'd', from, through);
     const pal = ['--c1', '--c2', '--c3', '--c4', '--c5', '--c6', '--c7', '--c8', '--text-faint'].map(css);
     let series;
@@ -184,12 +191,15 @@ export async function renderAccount(view, id) {
     else series = [{ label: 'Manual', key: 'manual', color: pal[0] }, { label: 'Automated', key: 'automated', color: css('--text-faint') }];
     series = series.filter((s) => days.some((x) => +x[s.key] > 0));
     document.getElementById('act-legend').innerHTML = series.map((s) => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join('')
-      + `<span><i style="background:transparent;border:2px solid ${css('--c2')};border-radius:50%"></i>Active users</span>`;
+      + `<span><i style="background:transparent;border:2px solid ${css('--c2')};border-radius:50%"></i>Active users</span>`
+      + (days.some((x) => quiet.has(x.d)) ? `<span><b style="color:${css('--text-muted')};font-size:14px;line-height:1">&times;</b>No activity performed (export log)</span>` : '');
     chart('ac-activity', {
       data: {
         labels: days.map((x) => x.d),
         datasets: [
           ...series.map((s) => ({ type: 'bar', label: s.label, data: days.map((x) => +x[s.key] || 0), backgroundColor: s.color, stack: 'a', maxBarThickness: 22, borderRadius: 2 })),
+          { type: 'line', label: 'No activity performed', _quiet: true, data: days.map((x) => (quiet.has(x.d) ? 0 : null)), stack: 'q',
+            showLine: false, pointStyle: 'crossRot', pointRadius: 7, pointHoverRadius: 8, pointBorderWidth: 2, borderColor: css('--text-muted'), backgroundColor: css('--text-muted') },
           { type: 'line', label: 'Active users', data: days.map((x) => (+x.active_users ? +x.active_users : null)), borderColor: css('--c2'), backgroundColor: css('--surface'), yAxisID: 'y1', pointRadius: 3, pointBorderWidth: 2, borderWidth: 0, showLine: false },
         ],
       },
@@ -199,7 +209,8 @@ export async function renderAccount(view, id) {
           y: { stacked: true, beginAtZero: true, grid: { color: css('--divider') }, title: { display: true, text: 'Events' } },
           y1: { beginAtZero: true, position: 'right', grid: { display: false }, ticks: { precision: 0 }, suggestedMax: 3, title: { display: true, text: 'Users' } },
         },
-        plugins: { tooltip: { filter: (i) => i.raw !== 0, callbacks: { title: (i) => fmt.date(i[0].label) } } },
+        plugins: { tooltip: { filter: (i) => (i.dataset._quiet ? i.raw === 0 : i.raw !== 0 && i.raw !== null), callbacks: { title: (i) => fmt.date(i[0].label),
+          label: (i) => (i.dataset._quiet ? 'No activity performed, confirmed by the export log' : `${i.dataset.label}: ${fmt.n(i.raw)}`) } } },
       },
     });
   };
@@ -229,7 +240,7 @@ export async function renderAccount(view, id) {
 
   // Draw each section on its own so one failure cannot leave the others blank.
   const safe = (name, target, fn) => { try { fn(); } catch (e) { console.error(`${name} failed`, e); sectionError(target, name, e); } };
-  const drawDaily = () => safe('Daily summary', 'daily', () => dailyTable(daily, a.timezone));
+  const drawDaily = () => safe('Daily summary', 'daily', () => dailyTable(daily, a.timezone, quiet));
   safe('Health score history', 'ac-health', drawHist);
   safe('Daily activity', 'ac-activity', drawActivity);
   safe('Usage heatmap', 'heat', () => drawHeat(d.hours));
@@ -311,13 +322,16 @@ function dqRows(rows, tz) {
   }).join('')}</tbody>`;
 }
 
-function dailyTable(rows, tz) {
-  const list = rows.filter((r) => detailUser === 'all' || r.user_id === detailUser).sort((x, y) => String(y.activity_date).localeCompare(String(x.activity_date)));
+function dailyTable(rows, tz, quiet = new Set()) {
+  const list = rows.filter((r) => detailUser === 'all' || r.user_id === detailUser);
+  const userDays = new Set(rows.filter((r) => r.actor_type === 'user').map((r) => String(r.activity_date).slice(0, 10)));
+  if (detailUser === 'all') for (const q of quiet) if (!userDays.has(q)) list.push({ activity_date: q, _quiet: true });
+  list.sort((x, y) => String(y.activity_date).localeCompare(String(x.activity_date)));
   const objCols = [['obj_columns', 'Cols'], ['obj_etl_programs', 'ETL'], ['obj_bi_tables', 'BI'], ['obj_dq_rules', 'DQ'], ['obj_data_domains', 'Domains'], ['obj_use_cases', 'Use cases']];
   document.getElementById('daily').innerHTML = `<thead><tr><th>Date</th><th>User</th><th class="n">Events</th><th class="n">Actions</th>
     <th class="n">Created</th><th class="n">Updated</th><th class="n">Deleted</th><th class="n">Executed</th>
     ${objCols.map(([, l]) => `<th class="n">${l}</th>`).join('')}<th class="n">Alarms</th><th>First</th><th>Last</th><th class="n">Sessions</th><th>Flags</th></tr></thead>
-    <tbody>${list.map((r) => `<tr>
+    <tbody>${list.map((r) => r._quiet ? `<tr class="quiet-row"><td>${fmt.short(r.activity_date)}</td><td colspan="18"><span class="badge info">No activity performed</span> <span class="small muted">The export job found 0 records for this day.</span></td></tr>` : `<tr>
       <td>${fmt.short(r.activity_date)}</td>
       <td>${r.actor_type === 'system' ? '<span class="badge info">System</span>' : esc(r.user_name || r.user_id)}</td>
       <td class="n">${fmt.n(r.total_events)}</td><td class="n">${fmt.n(r.actions)}</td>

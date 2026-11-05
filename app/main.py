@@ -51,7 +51,7 @@ app = FastAPI(title="Customer Health Engine", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 _schema_ready = False
-API_VERSION = 4  # 4 = SharePoint folder watch; 3 = login and users; 2 = multi-customer (adds /api/customers, per-customer uploads)
+API_VERSION = 5  # 4 = SharePoint folder watch; 3 = login and users; 2 = multi-customer (adds /api/customers, per-customer uploads)
 
 
 PUBLIC_PATHS = {"/api/ping", "/api/auth/login", "/api/sync/run"}  # sync/run checks CRON_SECRET itself
@@ -214,7 +214,9 @@ def _customer_meta(conn) -> dict[int, dict]:
     rows = conn.execute(
         """select a.account_id,
                   (select min(activity_date) from daily_activity d where d.account_id=a.account_id) data_from,
-                  (select max(activity_date) from daily_activity d where d.account_id=a.account_id) data_through,
+                  greatest((select max(activity_date) from daily_activity d where d.account_id=a.account_id),
+                           (select max(n.activity_date) from no_activity_days n where n.account_id=a.account_id
+                              and n.activity_date >= (select min(activity_date) from daily_activity d where d.account_id=a.account_id))) data_through,
                   (select count(*) from events e where e.account_id=a.account_id) events,
                   (select max(coalesce(u.completed_at, u.created_at)) from uploads u
                     where u.status='complete' and (a.account_id = any(u.account_ids) or u.target_account_id=a.account_id)) last_upload,
@@ -336,11 +338,35 @@ def api_sync_run(request: Request):
     return SYNC.run_sync("cron")
 
 
-def _source_row(r: dict, interval: float) -> dict:
+def _source_row(r: dict, settings: dict) -> dict:
     nxt = None
     if r.get("enabled"):
-        nxt = (r["last_checked_at"] + timedelta(hours=interval)) if r.get("last_checked_at") and not r.get("backlog") else "next run"
+        nxt = "next run" if r.get("backlog") or not r.get("last_checked_at") else settings["next_run_at"]
     return {**r, "next_check_at": nxt}
+
+
+def _execution(conn, run_key: str | None = None) -> dict | None:
+    """One export run with its per-customer results, linked to what the dashboard did with each file."""
+    run = conn.execute(
+        "select * from execution_runs where (%s::text is null or run_key=%s) order by started_at desc nulls last limit 1",
+        [run_key, run_key]).fetchone()
+    if not run:
+        return None
+    results = conn.execute(
+        """select r.*, a.name dashboard_name, (s.account_id is not null) watched, s.enabled watch_enabled,
+                  f.status file_status, f.message file_message, f.processed_at file_processed_at,
+                  exists (select 1 from no_activity_days n where n.account_id=r.account_id
+                          and n.activity_date=r.export_date) marked_no_activity
+           from execution_results r
+           left join accounts a on a.account_id=r.account_id
+           left join sharepoint_sources s on s.account_id=r.account_id
+           left join lateral (select status, message, processed_at from sharepoint_files f
+                              where f.account_id=r.account_id and f.name=r.file_name
+                              order by first_seen_at desc limit 1) f on true
+           where r.run_key=%s order by lower(r.customer_name)""", [run["run_key"]]).fetchall()
+    counts = {k: sum(1 for x in results if x["status"] == k) for k in ("success", "no_activity", "failed")}
+    return {**run, "results": results, "counts": counts,
+            "records": sum(x["records"] or 0 for x in results)}
 
 
 @app.get("/api/sharepoint")
@@ -354,23 +380,73 @@ def api_sharepoint():
                       (select count(*) from sharepoint_files f where f.account_id=s.account_id and f.status in ('pending','processing')) files_waiting
                from sharepoint_sources s join accounts a using (account_id) order by lower(a.name)""").fetchall()
         runs = conn.execute("select * from sharepoint_runs order by run_id desc limit 10").fetchall()
+        log = SYNC.get_log_source(conn)
+        execution = _execution(conn)
+        history = conn.execute(
+            """select r.run_key, r.started_at, r.export_date, r.status,
+                      (select count(*) from execution_results x where x.run_key=r.run_key and x.status='failed') failed
+               from execution_runs r order by r.started_at desc nulls last limit 60""").fetchall()
     return {"credentials": SP.config_status(), "configured": SP.configured(),
             "cron_secret_set": bool((os.environ.get("CRON_SECRET") or "").strip()),
-            "settings": settings, "limits": {"min": SYNC.MIN_INTERVAL, "max": SYNC.MAX_INTERVAL},
-            "sources": [_source_row(r, settings["interval_hours"]) for r in rows], "runs": runs}
+            "settings": settings, "timezones": SYNC.TZ_LABEL,
+            "sources": [_source_row(r, settings) for r in rows], "runs": runs,
+            "log": log, "execution": execution, "execution_history": history}
+
+
+@app.get("/api/sharepoint/executions")
+def api_sharepoint_execution(run_key: str):
+    with connect() as conn:
+        ex = _execution(conn, run_key)
+    if not ex:
+        _err(ValueError("run not found"), 404)
+    return ex
 
 
 class SyncSettingsBody(BaseModel):
-    interval_hours: float
+    run_hour: int
+    run_minute: int = 0
+    run_tz: str = "PKT"
 
 
 @app.put("/api/sharepoint/settings")
 def api_sharepoint_settings(body: SyncSettingsBody, request: Request):
     try:
         with connect() as conn:
-            return SYNC.save_settings(conn, body.interval_hours, request.state.user["email"])
+            return SYNC.save_settings(conn, body.run_hour, body.run_tz, request.state.user["email"], body.run_minute)
     except ValueError as exc:
         _err(exc)
+
+
+class LogBody(BaseModel):
+    folder_url: str
+
+
+@app.put("/api/sharepoint/log")
+def api_sharepoint_log(body: LogBody, request: Request):
+    url = body.folder_url.strip()
+    if not url:
+        _err(ValueError("Paste the execution log folder link."))
+    try:
+        res = SYNC.set_log_folder(url, request.state.user["email"])
+    except SP.GraphError as exc:
+        _err(exc)
+    read = SYNC.read_execution_log(force=True) if res["log_name"] else None
+    return {"ok": True, **res, "read": read}
+
+
+@app.delete("/api/sharepoint/log")
+def api_sharepoint_log_delete():
+    with connect() as conn:
+        SYNC._save_log_source(conn, None)
+    return {"ok": True}
+
+
+@app.post("/api/sharepoint/log/read")
+def api_sharepoint_log_read():
+    out = SYNC.read_execution_log(force=True)
+    if out["status"] == "off":
+        _err(ValueError("Set the execution log folder first."))
+    return out
 
 
 @app.post("/api/sharepoint/test")
@@ -398,7 +474,7 @@ def api_account_sharepoint(account_id: int):
                from sharepoint_files where account_id=%s order by coalesce(processed_at, first_seen_at) desc limit 100""",
             [account_id]).fetchall()
     return {"configured": SP.configured(), "settings": settings,
-            "source": _source_row(src, settings["interval_hours"]) if src else None, "files": files}
+            "source": _source_row(src, settings) if src else None, "files": files}
 
 
 class SourceBody(BaseModel):
@@ -487,7 +563,8 @@ def portfolio():
                where activity_date > (select max(activity_date) from daily_activity x where x.account_id=da.account_id) - 30
                group by 1, 2 order by 1, 2"""):
             act[r["account_id"]].append(r)
-        through = conn.execute("select max(activity_date) d from daily_activity").fetchone()["d"]
+        through = conn.execute("""select greatest((select max(activity_date) from daily_activity),
+                                                  (select max(activity_date) from no_activity_days)) d""").fetchone()["d"]
         meta = _customer_meta(conn)
 
     out = []
@@ -617,6 +694,17 @@ def account(account_id: int):
                where account_id=%s and actor_type='user' and not is_duplicate and not is_automated and entity_name is not null
                group by 1, 2 order by 3 desc limit 10""", [account_id]).fetchall()
         meta = _customer_meta(conn).get(account_id)
+        quiet = conn.execute(
+            """select n.activity_date d from no_activity_days n
+               where n.account_id=%s and n.activity_date >= (select min(activity_date) from daily_activity where account_id=%s)
+                 and not exists (select 1 from daily_activity x where x.account_id=n.account_id
+                                 and x.activity_date=n.activity_date and x.actor_type='user')
+               order by 1""", [account_id, account_id]).fetchall()
+        executions = conn.execute(
+            """select r.export_date, r.status, r.records, r.message, r.file_name, e.started_at, e.run_key
+               from execution_results r join execution_runs e using (run_key)
+               where r.account_id=%s order by r.export_date desc nulls last, e.started_at desc limit 14""",
+            [account_id]).fetchall()
         quality = conn.execute(
             """select count(*) total, count(*) filter (where is_duplicate) duplicates,
                       count(*) filter (where is_automated) automated, min(ts) min_ts, max(ts) max_ts
@@ -636,7 +724,8 @@ def account(account_id: int):
         latest["as_of_date"] = _day(latest["as_of_date"])
     return {"account": a, "latest": latest, "history": history, "daily": daily, "matrix": matrix, "users": users,
             "hours": hours, "alarms": alarms, "dq_runs": dq, "top_objects": top_objects, "quality": quality,
-            "freshness": _freshness(meta),
+            "freshness": _freshness(meta), "no_activity_days": [_day(r["d"]) for r in quiet],
+            "executions": [{**e, "export_date": _day(e["export_date"])} for e in executions],
             "thresholds": {"healthy": C.HEALTHY_AT, "watch": C.WATCH_AT}}
 
 

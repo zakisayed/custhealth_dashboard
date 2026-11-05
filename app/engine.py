@@ -150,7 +150,8 @@ def _delta(cur: float, prev: float) -> float | None:
 class _AccountSeries:
     """Per-day aggregates for one account, held in memory for fast windowed math."""
 
-    def __init__(self, acct: dict, rows: list[dict], objs: list[dict], pool_users: dict):
+    def __init__(self, acct: dict, rows: list[dict], objs: list[dict], pool_users: dict,
+                 quiet_days: list | None = None):
         self.acct = acct
         self.actions = defaultdict(int)
         self.events = defaultdict(int)
@@ -187,6 +188,11 @@ class _AccountSeries:
         # Each customer is scored through the end of its own data, so customers uploaded on
         # different days are not penalized for days their export does not cover yet.
         self.through = max([r["activity_date"] for r in rows], default=None)
+        # Days the export job confirmed 0 records extend the scored range: they are real days
+        # with no activity, not days whose export has not arrived yet.
+        self.quiet_days = sorted(d for d in (quiet_days or []) if self.first and d >= self.first)
+        if self.quiet_days and self.through and self.quiet_days[-1] > self.through:
+            self.through = self.quiet_days[-1]
 
     def window_sum(self, series: dict, end: date, days: int) -> int:
         return sum(series.get(end - timedelta(i), 0) for i in range(days))
@@ -337,6 +343,11 @@ def _score_day(s: _AccountSeries, d: date, peers: dict, peer_ok: bool) -> dict:
         reasons.append({"level": "watch", "text": f"{len(users_cur)} of {denom} users active in {W} days"})
     if len(core_30) <= 1:
         reasons.append({"level": "watch", "text": f"Using {len(core_30)} object type in {C.ADOPTION_WINDOW} days"})
+    quiet_recent = [q for q in s.quiet_days if d - timedelta(W - 1) <= q <= d and not s.actions.get(q)]
+    if quiet_recent:
+        reasons.append({"level": "info", "text": (f"No activity on {quiet_recent[-1]:%b %-d}, confirmed by the export log"
+                        if len(quiet_recent) == 1 else
+                        f"{len(quiet_recent)} days with no activity in {W} days, confirmed by the export log")})
     if crit:
         reasons.append({"level": "risk", "text": f"{crit} critical alarm{'s' if crit > 1 else ''} in {W} days"})
     if warn:
@@ -373,8 +384,9 @@ def _health(conn, trigger: str | None = None) -> dict:
     accts = conn.execute("select account_id, name, timezone, licensed_seats from accounts").fetchall()
     if not accts:
         return {"accounts": 0}
-    through = conn.execute("select max(activity_date) as d from daily_activity").fetchone()["d"]
-    if through is None:
+    through = conn.execute("""select greatest((select max(activity_date) from daily_activity),
+                                              (select max(activity_date) from no_activity_days)) as d""").fetchone()["d"]
+    if through is None or not conn.execute("select 1 from daily_activity limit 1").fetchone():
         return {"accounts": 0}
 
     rows = defaultdict(list)
@@ -395,7 +407,11 @@ def _health(conn, trigger: str | None = None) -> dict:
            from daily_activity where actor_type = 'user' group by 1, 2"""):
         users[r["account_id"]][r["user_id"]] = (r["f"], r["l"])
 
-    series = {a["account_id"]: _AccountSeries(a, rows[a["account_id"]], objs[a["account_id"]], users[a["account_id"]])
+    quiet = defaultdict(list)
+    for r in conn.execute("select account_id, activity_date from no_activity_days"):
+        quiet[r["account_id"]].append(r["activity_date"])
+    series = {a["account_id"]: _AccountSeries(a, rows[a["account_id"]], objs[a["account_id"]], users[a["account_id"]],
+                                              quiet[a["account_id"]])
               for a in accts}
     peers = _peer_benchmarks(series)
 

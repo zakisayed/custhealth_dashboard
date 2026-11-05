@@ -95,9 +95,17 @@ Each customer can watch one SharePoint folder. New `.csv`, `.xlsx` and `.xlsm` f
 SharePoint sync page, Add folder, or the customer's Settings, SharePoint folder. Paste the folder address from the browser or a sharing link. "Also import files already in the folder" imports what is there now; otherwise existing files are marked as a baseline and only files added later are imported. Check now runs a check immediately.
 
 ### Schedule
-The check interval (1 to 168 hours, default 6) is set on the SharePoint sync page. A scheduler calls `/api/sync/run` and only customers that are due are checked.
-- Vercel Hobby allows cron jobs once a day only, so `vercel.json` has a daily cron at 06:00 UTC. On Vercel Pro you can change it to hourly (`0 * * * *`).
-- For hourly checks on Hobby, the included GitHub Action `.github/workflows/sharepoint-sync.yml` calls the endpoint every hour. In the GitHub repo add the secret `CRON_SECRET` (same value as Vercel) and the variable `DASHBOARD_URL` (for example `https://your-app.vercel.app`). GitHub pauses scheduled workflows after 60 days with no repo activity; re-enable it from the Actions tab.
+Set the daily check time on the SharePoint sync page: an hour from 00:00 to 23:00 and a timezone, UTC or PKT (UTC+5). Default is 13:00 PKT. Pick a time after the export job finishes (the sample log finished at 07:14 UTC, which is 12:14 PKT). A scheduler calls `/api/sync/run` every hour; the first call after the check time checks every customer folder and reads the execution log. A folder added during the day is checked on the next hourly call, and Check now always runs right away.
+- For hourly scheduler calls on Vercel Hobby, use the included GitHub Action `.github/workflows/sharepoint-sync.yml` (runs at minute 17 of every hour). In the GitHub repo add the secret `CRON_SECRET` (same value as Vercel) and the variable `DASHBOARD_URL` (for example `https://your-app.vercel.app`). GitHub pauses scheduled workflows after 60 days with no repo activity; re-enable it from the Actions tab.
+- Vercel Hobby allows cron jobs once a day only, so `vercel.json` keeps a daily cron at 06:00 UTC as a backup. On Vercel Pro you can change it to hourly (`0 * * * *`).
+
+### Execution status (export job log)
+Set the execution log folder on the SharePoint sync page (Execution status, Set log folder). At each daily check the newest `.log` file in that folder is read. If it has not been rewritten yet, it is checked again every hour for 6 hours.
+- Each run shows its export date, start and finish time, and one row per customer: Success, No activity (0 records) or Failed, with records extracted, the uploaded file, and what the dashboard did with that file.
+- Older runs stay available in the export date picker.
+- When a customer has 0 records for a day, that day counts as "no activity performed": the customer is scored through that date (recency drops, the score reason says "No activity on <date>, confirmed by the export log"), the daily activity chart marks the day with a cross, and the daily summary table shows a "No activity performed" row. If a later file brings activity for that day, the flag goes away.
+- If the latest export for a customer failed, the customer dashboard shows a notice. Failed days are not counted as no activity.
+- Customer days are matched on the date in the log (the export runs per UTC day).
 
 ### Behaviour
 - Only files directly in the folder are read (not subfolders). Office lock files (`~$...`) and other file types are skipped.

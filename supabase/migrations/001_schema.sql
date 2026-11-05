@@ -200,7 +200,7 @@ alter table app_users    enable row level security;
 alter table scoring_model_versions enable row level security;
 alter table app_settings enable row level security;
 
--- SharePoint folder watch: one folder per customer, checked every N hours (app_settings 'sharepoint_sync').
+-- SharePoint folder watch: one folder per customer, checked once a day at the time set in app_settings 'sharepoint_sync'.
 create table if not exists sharepoint_sources (
   account_id       bigint primary key references accounts(account_id) on delete cascade,
   folder_url       text not null,
@@ -254,3 +254,40 @@ create table if not exists sharepoint_runs (
 alter table sharepoint_sources enable row level security;
 alter table sharepoint_files   enable row level security;
 alter table sharepoint_runs    enable row level security;
+
+-- Export job execution log (audit_export.log in the execution log folder). One row per run and
+-- one per customer in that run. Read on every scheduled check.
+create table if not exists execution_runs (
+  run_key            text primary key,         -- run start time, ISO UTC
+  started_at         timestamptz,
+  finished_at        timestamptz,
+  export_date        date,
+  status             text not null,            -- ok | partial | failed | running | incomplete
+  customers_expected integer,
+  message            text,
+  log_name           text,
+  read_at            timestamptz not null default now()
+);
+
+create table if not exists execution_results (
+  run_key       text not null references execution_runs(run_key) on delete cascade,
+  account_id    bigint not null,               -- may be a customer that is not in the dashboard yet
+  customer_name text,
+  export_date   date,
+  status        text not null,                 -- success | no_activity | failed
+  records       integer,
+  file_name     text,
+  file_url      text,
+  message       text,
+  primary key (run_key, account_id)
+);
+create index if not exists execution_results_account on execution_results (account_id, export_date desc);
+
+-- Days the export job confirmed 0 records for a customer. Scoring runs through these days, so
+-- they count as "no activity" instead of "no data yet".
+create or replace view no_activity_days as
+  select distinct account_id, export_date as activity_date from execution_results
+  where status = 'no_activity' and export_date is not null;
+
+alter table execution_runs    enable row level security;
+alter table execution_results enable row level security;

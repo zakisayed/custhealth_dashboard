@@ -302,6 +302,13 @@ code, .mono { font-family: var(--mono); font-size: 0.85em; background: var(--sur
 .add-folder select { min-width: 180px; }
 .sp-folder { max-width: 280px; overflow-wrap: break-word; }
 .sp-msg { max-width: 360px; overflow-wrap: anywhere; }
+#exec-tbl .sp-msg { min-width: 240px; }
+.exec-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--space-3) var(--space-5); margin-bottom: var(--space-3); }
+.exec-sum > div { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; font-size: var(--text-sm); }
+.exec-sum .label { font-size: var(--text-xs); color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+#exec-card .card-head .actions { display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center; }
+.sync-int select { min-width: 120px; }
+.quiet-row td { background: var(--surface-2, var(--bg)); }
 
 
 /* ---------- responsive ---------- */
